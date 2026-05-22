@@ -45,8 +45,7 @@ services:
       DATABASE_URL: postgresql://${DB_USER}:${DB_PASSWORD}@db:${DB_PORT}/${DB_NAME}
       REDIS_URL: redis://redis:6379
       OPENAI_API_KEY: ${OPENAI_API_KEY}
-      SERPAPI_KEY: ${SERPAPI_KEY}
-      BRAVE_API_KEY: ${BRAVE_API_KEY}
+      SERPAPI_KEY: ${SERPAPI_KEY:-replace-me}
       INTERNAL_API_SECRET: ${INTERNAL_API_SECRET}
     depends_on:
       db:

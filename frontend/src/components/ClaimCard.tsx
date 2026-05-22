@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Claim, ClaimVerdict, Source } from '../context/JobContext'
+import type { Claim, ClaimVerdict, Source } from '../context/JobContext'
 import SourceCard from './SourceCard'
 
 const VERDICT_COLORS: Record<string, string> = {

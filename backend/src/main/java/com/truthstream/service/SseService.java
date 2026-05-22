@@ -1,5 +1,6 @@
 package com.truthstream.service;
 
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -66,9 +67,9 @@ public class SseService {
 
         try {
             String body = new String(message.getBody());
-            Map<?, ?> eventMap = objectMapper.readValue(body, Map.class);
-            String type = (String) eventMap.getOrDefault("type", "message");
-            Object data = eventMap.getOrDefault("data", eventMap);
+            Map<String, Object> eventMap = objectMapper.readValue(body, new TypeReference<>() {});
+            String type = String.valueOf(eventMap.getOrDefault("type", "message"));
+            Object data = eventMap.containsKey("data") ? eventMap.get("data") : eventMap;
 
             emitter.send(SseEmitter.event()
                     .name(type)

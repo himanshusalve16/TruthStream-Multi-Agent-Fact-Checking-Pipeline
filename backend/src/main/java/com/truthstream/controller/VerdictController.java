@@ -1,14 +1,11 @@
 package com.truthstream.controller;
 
-import com.truthstream.model.Verdict;
-import com.truthstream.repository.VerdictRepository;
-import com.truthstream.service.JobService;
+import com.truthstream.service.JobResultService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
 
-import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
@@ -17,8 +14,7 @@ import java.util.UUID;
 @RequiredArgsConstructor
 public class VerdictController {
 
-    private final VerdictRepository verdictRepository;
-    private final JobService jobService;
+    private final JobResultService jobResultService;
 
     @GetMapping("/{jobId}/verdict")
     public ResponseEntity<Map<String, Object>> getVerdict(
@@ -26,26 +22,15 @@ public class VerdictController {
             Authentication auth) {
 
         UUID userId = (UUID) auth.getPrincipal();
-        // Verify ownership
-        jobService.getJob(jobId, userId);
+        return ResponseEntity.ok(jobResultService.getFullVerdict(jobId, userId));
+    }
 
-        Verdict overall = verdictRepository.findByJobIdAndIsOverallTrue(jobId)
-                .orElse(null);
-        List<Verdict> claimVerdicts = verdictRepository.findByJobIdAndIsOverallFalse(jobId);
+    @GetMapping("/{jobId}/sources")
+    public ResponseEntity<Map<String, Object>> getSources(
+            @PathVariable UUID jobId,
+            Authentication auth) {
 
-        return ResponseEntity.ok(Map.of(
-                "job_id", jobId,
-                "overall_verdict", overall != null ? overall.getVerdict() : "PENDING",
-                "overall_confidence", overall != null && overall.getConfidence() != null
-                        ? overall.getConfidence() : 0,
-                "overall_summary", overall != null && overall.getReasoning() != null
-                        ? overall.getReasoning() : "",
-                "claim_verdicts", claimVerdicts.stream().map(v -> Map.of(
-                        "claim_id", v.getClaimId() != null ? v.getClaimId() : "",
-                        "verdict", v.getVerdict(),
-                        "confidence", v.getConfidence() != null ? v.getConfidence() : 0,
-                        "reasoning", v.getReasoning() != null ? v.getReasoning() : ""
-                )).toList()
-        ));
+        UUID userId = (UUID) auth.getPrincipal();
+        return ResponseEntity.ok(jobResultService.getSourcesByClaim(jobId, userId));
     }
 }

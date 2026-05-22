@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react'
 import * as d3 from 'd3'
-import { ClaimVerdict } from '../context/JobContext'
+import type { ClaimVerdict } from '../context/JobContext'
 
 interface Props {
   claims: Array<{ claim_id: string; text: string }>

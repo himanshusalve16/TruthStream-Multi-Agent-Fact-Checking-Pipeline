@@ -1,0 +1,11 @@
+# Railway monorepo hints — create three services in the Railway dashboard:
+# 1. backend  (root: /backend, Dockerfile)
+# 2. ai-service (root: /ai-service, Dockerfile)
+# 3. PostgreSQL + Redis (managed plugins)
+
+[build]
+builder = "DOCKERFILE"
+
+[deploy]
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 3

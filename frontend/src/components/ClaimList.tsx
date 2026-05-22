@@ -1,4 +1,4 @@
-import { Claim, ClaimVerdict, Source } from '../context/JobContext'
+import type { Claim, ClaimVerdict, Source } from '../context/JobContext'
 import ClaimCard from './ClaimCard'
 
 interface Props {

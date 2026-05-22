@@ -1,4 +1,4 @@
-import { Source } from '../context/JobContext'
+import type { Source } from '../context/JobContext'
 
 const STANCE_ICONS: Record<string, string> = {
   SUPPORTS: '✅',

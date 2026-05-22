@@ -1,4 +1,4 @@
-import { Stage } from '../context/JobContext'
+import type { Stage } from '../context/JobContext'
 
 const STAGES: { key: Stage; label: string; icon: string }[] = [
   { key: 'fetching_article',  label: 'Fetching',   icon: '🌐' },

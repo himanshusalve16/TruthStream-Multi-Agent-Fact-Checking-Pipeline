@@ -152,35 +152,55 @@ async def scrape_url(
         return "", "error"
 
 
+async def _fetch_article_url_once(url: str) -> tuple[str, str]:
+    """Single attempt to fetch article text."""
+    async with httpx.AsyncClient(
+            timeout=10.0,
+            headers={"User-Agent": BOT_USER_AGENT},
+            follow_redirects=True,
+            max_redirects=5,
+    ) as client:
+        response = await client.get(url)
+        response.raise_for_status()
+
+        soup = BeautifulSoup(response.text, "lxml")
+        for tag in soup.find_all(["nav", "footer", "header", "aside",
+                                  "script", "style", "noscript"]):
+            tag.decompose()
+
+        text = soup.get_text(separator=" ", strip=True)
+        return text, "success"
+
+
 async def fetch_article_url(url: str) -> tuple[str, str]:
     """
-    Fetch a full article URL for analysis. Returns (raw_html_text, fetch_status).
-    Used for the main article input, not source snippets.
-    Applies a longer 10s timeout.
+    Fetch a full article URL for analysis with exponential backoff retries.
+    Returns (raw_html_text, fetch_status).
     """
     if not _validate_url(url):
         raise ValueError(f"URL failed SSRF validation: {url}")
 
-    try:
-        async with httpx.AsyncClient(
-                timeout=10.0,
-                headers={"User-Agent": BOT_USER_AGENT},
-                follow_redirects=True,
-                max_redirects=5,
-        ) as client:
-            response = await client.get(url)
-            response.raise_for_status()
+    delays = [2, 4, 8]
+    last_error: Exception | None = None
 
-            soup = BeautifulSoup(response.text, "lxml")
-            # Remove boilerplate
-            for tag in soup.find_all(["nav", "footer", "header", "aside",
-                                      "script", "style", "noscript"]):
-                tag.decompose()
+    for attempt in range(3):
+        try:
+            return await _fetch_article_url_once(url)
+        except httpx.TimeoutException as e:
+            last_error = TimeoutError(f"Article fetch timed out: {url}")
+            logger.warning("Article fetch attempt %d timed out for %s", attempt + 1, url)
+        except httpx.HTTPStatusError as e:
+            last_error = ValueError(f"HTTP {e.response.status_code} fetching {url}")
+            logger.warning("Article fetch attempt %d HTTP error for %s: %s", attempt + 1, url, e)
+        except Exception as e:
+            last_error = e
+            logger.warning("Article fetch attempt %d failed for %s: %s", attempt + 1, url, e)
 
-            text = soup.get_text(separator=" ", strip=True)
-            return text, "success"
+        if attempt < 2:
+            await asyncio.sleep(delays[attempt])
 
-    except httpx.TimeoutException:
-        raise TimeoutError(f"Article fetch timed out: {url}")
-    except httpx.HTTPStatusError as e:
-        raise ValueError(f"HTTP {e.response.status_code} fetching {url}")
+    if isinstance(last_error, TimeoutError):
+        raise last_error
+    if isinstance(last_error, ValueError):
+        raise last_error
+    raise ValueError(f"Could not fetch article after 3 attempts: {url}")

@@ -2,6 +2,7 @@ import { useEffect } from 'react'
 import { useParams, Link, useNavigate } from 'react-router-dom'
 import { useJobContext } from '../context/JobContext'
 import { useJobStream } from '../hooks/useJobStream'
+import { useJobHydration } from '../hooks/useJobHydration'
 import LoadingState from '../components/LoadingState'
 import ErrorBanner from '../components/ErrorBanner'
 import VerdictBanner from '../components/VerdictBanner'
@@ -22,8 +23,8 @@ export default function JobPage() {
     }
   }, [id])
 
-  // Open SSE stream
-  useJobStream(id ?? null)
+  const streamEnabled = useJobHydration(id)
+  useJobStream(streamEnabled ? (id ?? null) : null)
 
   const isComplete = state.stage === 'complete'
   const isError = state.stage === 'error'

@@ -1,4 +1,5 @@
-import React, { createContext, useContext, useReducer, ReactNode } from 'react'
+import React, { createContext, useContext, useReducer } from 'react'
+import type { ReactNode } from 'react'
 
 // ── Types ──────────────────────────────────────────────────────
 export interface Claim {
@@ -77,7 +78,15 @@ type Action =
   | { type: 'SET_BIAS'; bias: BiasData }
   | { type: 'SET_VERDICT'; verdict: VerdictData }
   | { type: 'SET_ERROR'; error: string }
+  | { type: 'HYDRATE'; payload: HydratePayload }
   | { type: 'RESET' }
+
+export interface HydratePayload {
+  claims: Claim[]
+  sourcesByClaim: Record<string, Source[]>
+  bias: BiasData | null
+  verdict: VerdictData
+}
 
 const initialState: JobState = {
   jobId: null,
@@ -112,6 +121,17 @@ function reducer(state: JobState, action: Action): JobState {
       return { ...state, verdict: action.verdict, stage: 'complete' }
     case 'SET_ERROR':
       return { ...state, error: action.error, stage: 'error' }
+    case 'HYDRATE':
+      return {
+        ...state,
+        claims: action.payload.claims,
+        sourcesByClaim: action.payload.sourcesByClaim,
+        bias: action.payload.bias,
+        verdict: action.payload.verdict,
+        stage: 'complete',
+        stageMessage: '',
+        error: null,
+      }
     case 'RESET':
       return initialState
     default:

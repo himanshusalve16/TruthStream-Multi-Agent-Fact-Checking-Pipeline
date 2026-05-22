@@ -8,10 +8,8 @@ import com.truthstream.repository.JobRepository;
 import com.truthstream.repository.UserRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
-import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -22,7 +20,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
-import java.util.concurrent.TimeUnit;
 
 @Service
 @RequiredArgsConstructor
@@ -32,20 +29,14 @@ public class JobService {
     private final JobRepository jobRepository;
     private final UserRepository userRepository;
     private final FastApiClient fastApiClient;
-    private final RedisTemplate<String, String> redisTemplate;
-
-    @Value("${app.rate-limit.max-jobs-per-hour:10}")
-    private int maxJobsPerHour;
+    private final RateLimitService rateLimitService;
 
     /**
      * Create a new fact-checking job. Enforces rate limits and duplicate URL detection.
      */
     @Transactional
     public JobResponse createJob(UUID userId, JobRequest request) {
-        // Rate limit check
-        checkRateLimit(userId);
-
-        // Validate input
+        // Validate input (before rate limit so bad requests don't count)
         if ("url".equals(request.getInputType()) && (request.getUrl() == null || request.getUrl().isBlank())) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "URL is required for input_type=url");
         }
@@ -74,8 +65,9 @@ public class JobService {
                 .inputText(request.getText())
                 .build();
 
+        rateLimitService.checkJobRateLimit(userId);
         job = jobRepository.save(job);
-        incrementRateLimit(userId);
+        rateLimitService.recordJobSubmission(userId);
 
         // Dispatch to FastAPI asynchronously
         final UUID jobId = job.getId();
@@ -115,22 +107,6 @@ public class JobService {
                 "page", page,
                 "page_size", size
         );
-    }
-
-    private void checkRateLimit(UUID userId) {
-        String key = "ratelimit:" + userId;
-        Long count = redisTemplate.opsForValue().increment(key);
-        if (count == 1) {
-            redisTemplate.expire(key, 1, TimeUnit.HOURS);
-        }
-        if (count != null && count > maxJobsPerHour) {
-            throw new ResponseStatusException(HttpStatus.TOO_MANY_REQUESTS,
-                    "Rate limit exceeded: max " + maxJobsPerHour + " jobs per hour");
-        }
-    }
-
-    private void incrementRateLimit(UUID userId) {
-        // Already incremented in checkRateLimit
     }
 
     private JobResponse toJobResponse(Job job) {

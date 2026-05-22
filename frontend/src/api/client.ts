@@ -43,7 +43,47 @@ export const jobs = {
   list: (page = 1, size = 20) =>
     client.get(`/api/jobs?page=${page}&size=${size}`),
   getVerdict: (jobId: string) =>
-    client.get(`/api/jobs/${jobId}/verdict`),
+    client.get<FullVerdictResponse>(`/api/jobs/${jobId}/verdict`),
+  getSources: (jobId: string) =>
+    client.get<{ job_id: string; sources_by_claim: Record<string, SourceDto[]> }>(
+      `/api/jobs/${jobId}/sources`
+    ),
+}
+
+export interface SourceDto {
+  source_id: string
+  url: string
+  title?: string
+  domain?: string
+  snippet?: string
+  stance?: string
+  quality_score?: number
+  fetch_status?: string
+}
+
+export interface FullVerdictResponse {
+  job_id: string
+  overall_verdict: string
+  overall_confidence: number
+  overall_summary: string
+  bias: {
+    bias_score: number
+    bias_direction: string
+    framing_flags: unknown[]
+    loaded_terms: string[]
+    summary: string
+  } | null
+  article?: { id: string; url: string; truncated: boolean } | null
+  claim_verdicts: Array<{
+    claim_id: string
+    text: string
+    claim_type?: string
+    checkability?: string
+    verdict: string
+    confidence: number
+    reasoning: string
+    sources: SourceDto[]
+  }>
 }
 
 export interface JobStatus {

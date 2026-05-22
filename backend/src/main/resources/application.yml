@@ -5,7 +5,7 @@ spring:
   datasource:
     url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/truthstream}
     username: ${SPRING_DATASOURCE_USERNAME:postgres}
-    password: ${SPRING_DATASOURCE_PASSWORD:TruthStream2024!}
+    password: ${SPRING_DATASOURCE_PASSWORD:changeme}
     driver-class-name: org.postgresql.Driver
     hikari:
       maximum-pool-size: 10
@@ -46,6 +46,11 @@ spring:
     serialization:
       write-dates-as-timestamps: false
     default-property-inclusion: non_null
+
+  servlet:
+    multipart:
+      max-request-size: 1MB
+      max-file-size: 1MB
 
 server:
   port: ${SPRING_PORT:8080}

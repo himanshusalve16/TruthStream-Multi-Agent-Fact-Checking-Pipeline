@@ -1,31 +1,44 @@
-"""Web search using SerpAPI (primary) and Brave Search (fallback)."""
+"""Web search: SerpAPI (primary, optional) and DuckDuckGo HTML (free fallback, no API key)."""
 import logging
 from typing import List, Optional
+from urllib.parse import parse_qs, unquote, urlparse
+
 import httpx
+from bs4 import BeautifulSoup
 
 from config import settings
 
 logger = logging.getLogger(__name__)
 
 SERPAPI_URL = "https://serpapi.com/search"
-BRAVE_URL = "https://api.search.brave.com/res/v1/web/search"
+DDG_HTML_URL = "https://html.duckduckgo.com/html/"
+BOT_USER_AGENT = "TruthStream-Bot/1.0 (+https://truthstream.app/bot)"
 
 
 async def search_web(query: str, max_results: int = 10) -> List[dict]:
     """
-    Search using SerpAPI first, fall back to Brave if quota exceeded or error.
-    Returns a list of result dicts: {url, title, snippet, rank}.
+    Search using SerpAPI when configured, otherwise DuckDuckGo.
+    If SerpAPI fails or returns nothing, fall back to DuckDuckGo (no API key).
+    Returns: [{url, title, snippet, rank}, ...]
     """
-    results = await _search_serpapi(query, max_results)
+    results: List[dict] = []
+    if _serpapi_configured():
+        results = await _search_serpapi(query, max_results)
     if not results:
-        logger.info("SerpAPI returned no results, falling back to Brave Search")
-        results = await _search_brave(query, max_results)
+        if _serpapi_configured():
+            logger.info("SerpAPI returned no results, falling back to DuckDuckGo")
+        else:
+            logger.info("SerpAPI not configured, using DuckDuckGo search")
+        results = await _search_duckduckgo(query, max_results)
     return results
 
 
+def _serpapi_configured() -> bool:
+    key = settings.serpapi_key
+    return bool(key and key not in ("replace-me", ""))
+
+
 async def _search_serpapi(query: str, max_results: int) -> List[dict]:
-    if not settings.serpapi_key or settings.serpapi_key == "replace-me":
-        return []
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
             response = await client.get(SERPAPI_URL, params={
@@ -56,35 +69,61 @@ async def _search_serpapi(query: str, max_results: int) -> List[dict]:
         return []
 
 
-async def _search_brave(query: str, max_results: int) -> List[dict]:
-    if not settings.brave_api_key or settings.brave_api_key == "replace-me":
-        return []
+def _normalize_ddg_url(href: str) -> str:
+    """DuckDuckGo HTML results often use redirect URLs."""
+    if not href:
+        return ""
+    if href.startswith("//"):
+        href = "https:" + href
+    parsed = urlparse(href)
+    if "duckduckgo.com" in parsed.netloc and parsed.path == "/l/":
+        target = parse_qs(parsed.query).get("uddg", [""])[0]
+        return unquote(target) if target else href
+    return href
+
+
+async def _search_duckduckgo(query: str, max_results: int) -> List[dict]:
+    """
+    Free web search via DuckDuckGo HTML endpoint — no API key required.
+    Uses httpx + BeautifulSoup (same stack as the article scraper).
+    """
     try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            response = await client.get(
-                BRAVE_URL,
-                params={"q": query, "count": max_results},
+        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+            response = await client.post(
+                DDG_HTML_URL,
+                data={"q": query, "b": ""},
                 headers={
-                    "Accept": "application/json",
-                    "Accept-Encoding": "gzip",
-                    "X-Subscription-Token": settings.brave_api_key,
+                    "User-Agent": BOT_USER_AGENT,
+                    "Content-Type": "application/x-www-form-urlencoded",
                 },
             )
-            response.raise_for_status()
-            data = response.json()
-            results = data.get("web", {}).get("results", [])
-            return [
-                {
-                    "url": r.get("url", ""),
-                    "title": r.get("title", ""),
-                    "snippet": r.get("description", ""),
-                    "rank": i + 1,
-                }
-                for i, r in enumerate(results[:max_results])
-                if r.get("url")
-            ]
+            if response.status_code != 200:
+                logger.warning("DuckDuckGo HTTP %s", response.status_code)
+                return []
+
+            soup = BeautifulSoup(response.text, "lxml")
+            results: List[dict] = []
+
+            for block in soup.select("div.result"):
+                if len(results) >= max_results:
+                    break
+                link_el = block.select_one("a.result__a")
+                snippet_el = block.select_one("a.result__snippet, div.result__snippet")
+                if not link_el:
+                    continue
+                url = _normalize_ddg_url(link_el.get("href", ""))
+                if not url.startswith("http"):
+                    continue
+                results.append({
+                    "url": url,
+                    "title": link_el.get_text(strip=True),
+                    "snippet": snippet_el.get_text(strip=True) if snippet_el else "",
+                    "rank": len(results) + 1,
+                })
+
+            return results
     except Exception as e:
-        logger.error("Brave Search failed: %s", e)
+        logger.error("DuckDuckGo search failed: %s", e)
         return []
 
 

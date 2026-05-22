@@ -3,6 +3,9 @@ package com.truthstream.controller;
 import com.truthstream.dto.AuthRequest;
 import com.truthstream.dto.AuthResponse;
 import com.truthstream.service.AuthService;
+import com.truthstream.service.RateLimitService;
+import com.truthstream.util.ClientIpResolver;
+import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -20,9 +23,15 @@ import java.util.Map;
 public class AuthController {
 
     private final AuthService authService;
+    private final RateLimitService rateLimitService;
 
     @PostMapping("/register")
-    public ResponseEntity<Map<String, Object>> register(@Valid @RequestBody AuthRequest request) {
+    public ResponseEntity<Map<String, Object>> register(
+            @Valid @RequestBody AuthRequest request,
+            HttpServletRequest httpRequest) {
+        String clientIp = ClientIpResolver.resolve(httpRequest);
+        rateLimitService.checkAuthRateLimit(clientIp);
+        rateLimitService.recordAuthAttempt(clientIp);
         try {
             AuthResponse response = authService.register(request);
             return ResponseEntity.status(HttpStatus.CREATED).body(Map.of(
@@ -35,7 +44,12 @@ public class AuthController {
     }
 
     @PostMapping("/login")
-    public ResponseEntity<Map<String, Object>> login(@Valid @RequestBody AuthRequest request) {
+    public ResponseEntity<Map<String, Object>> login(
+            @Valid @RequestBody AuthRequest request,
+            HttpServletRequest httpRequest) {
+        String clientIp = ClientIpResolver.resolve(httpRequest);
+        rateLimitService.checkAuthRateLimit(clientIp);
+        rateLimitService.recordAuthAttempt(clientIp);
         try {
             AuthResponse response = authService.login(request);
             return ResponseEntity.ok(Map.of(

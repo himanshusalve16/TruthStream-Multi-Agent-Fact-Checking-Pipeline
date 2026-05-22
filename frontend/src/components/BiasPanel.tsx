@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { BiasData } from '../context/JobContext'
+import type { BiasData } from '../context/JobContext'
 
 interface Props {
   bias: BiasData

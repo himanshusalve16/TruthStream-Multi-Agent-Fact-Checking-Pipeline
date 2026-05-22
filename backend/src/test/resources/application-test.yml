@@ -1,0 +1,19 @@
+app:
+  jwt:
+    secret: test-secret-must-be-at-least-256-bits-long-for-hs256-signing-key-requirement-abc123xyz
+    expiry-ms: 3600000
+  fastapi:
+    base-url: http://localhost:8000
+  internal:
+    api-secret: test-internal-secret
+  rate-limit:
+    max-jobs-per-hour: 10
+    max-auth-per-hour: 20
+
+spring:
+  autoconfigure:
+    exclude:
+      - org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration
+      - org.springframework.boot.autoconfigure.orm.jpa.HibernateJpaAutoConfiguration
+      - org.springframework.boot.autoconfigure.data.redis.RedisAutoConfiguration
+      - org.springframework.boot.autoconfigure.flyway.FlywayAutoConfiguration

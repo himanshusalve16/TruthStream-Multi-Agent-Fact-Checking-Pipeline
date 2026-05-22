@@ -127,6 +127,9 @@ async def process_job(job_id: str, redis: aioredis.Redis, pool) -> None:
         input_url = job["input_url"]
         input_text = job["input_text"]
 
+        await queries.insert_audit_log(pool, job_id, user_id, "JOB_STARTED", {
+            "input_type": "url" if input_url else "text",
+        })
         await queries.update_job_status(pool, job_id, "PROCESSING")
         await publish_status(redis, job_id, "fetching_article", "Fetching article content...")
 
