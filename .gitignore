@@ -1,0 +1,10 @@
+node_modules/
+.env
+*.class
+__pycache__/
+.venv/
+target/
+.DS_Store
+*.pyc
+.idea/
+.vscode/settings.json
