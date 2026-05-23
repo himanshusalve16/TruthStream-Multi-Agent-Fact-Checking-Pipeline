@@ -10,6 +10,7 @@ public class JobRequest {
 
     @NotBlank(message = "input_type is required")
     @Pattern(regexp = "url|text", message = "input_type must be 'url' or 'text'")
+    @com.fasterxml.jackson.annotation.JsonProperty("input_type")
     private String inputType;
 
     @URL(message = "Must be a valid URL")

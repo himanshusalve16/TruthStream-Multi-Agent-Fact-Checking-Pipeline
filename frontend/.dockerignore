@@ -1,0 +1,28 @@
+# ── Build artifacts ───────────────────────────────────────────────────────────
+# Docker builds from source using npm ci. The dist/ folder is not needed
+# in the build context and would be overwritten by `npm run build` anyway.
+dist/
+dist-ssr/
+
+# ── Dependencies ──────────────────────────────────────────────────────────────
+# node_modules can be 200-500 MB. Docker installs fresh from package-lock.json.
+# Sending this directory to the Docker daemon adds minutes to every build.
+node_modules/
+
+# ── Local env files (secrets must never be baked into the image) ──────────────
+.env
+.env.*
+*.local
+
+# ── Editor / OS files ─────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# ── Git ───────────────────────────────────────────────────────────────────────
+.git/
+.gitignore
+
+# ── Test output ───────────────────────────────────────────────────────────────
+coverage/

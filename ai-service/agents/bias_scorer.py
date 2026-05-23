@@ -3,8 +3,9 @@ import asyncio
 import json
 import logging
 
+from google.genai import types
 from models.schemas import BiasResult, FramingFlag
-from services.embeddings import get_openai_client
+from services.embeddings import get_gemini_client
 from utils.text import sanitize_for_llm
 
 logger = logging.getLogger(__name__)
@@ -40,7 +41,7 @@ async def score_bias(article_text: str, article_url: str | None = None) -> BiasR
     Run the Bias Scorer agent against the full article text.
     Returns a BiasResult. Temperature = 0.2 per spec.
     """
-    client = get_openai_client()
+    client = get_gemini_client()
     safe_text = sanitize_for_llm(article_text)
     user_content = (
         f"Article URL: {article_url or 'N/A'}\n\n"
@@ -50,17 +51,16 @@ async def score_bias(article_text: str, article_url: str | None = None) -> BiasR
 
     for attempt in range(MAX_RETRIES + 1):
         try:
-            response = await client.chat.completions.create(
-                model="gpt-4o",
-                temperature=0.2,
-                response_format={"type": "json_object"},
-                messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": user_content},
-                ],
-                timeout=30.0,
+            response = await client.aio.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=user_content,
+                config=types.GenerateContentConfig(
+                    system_instruction=SYSTEM_PROMPT,
+                    temperature=0.2,
+                    response_mime_type="application/json",
+                )
             )
-            raw = response.choices[0].message.content
+            raw = response.text
             data = json.loads(raw)
             flags = [FramingFlag(**f) for f in data.get("framing_flags", [])]
             return BiasResult(

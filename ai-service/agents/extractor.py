@@ -4,10 +4,10 @@ import json
 import logging
 from typing import List
 
-from openai import AsyncOpenAI
+from google.genai import types
 
 from models.schemas import ClaimSchema, ClaimExtractionResult
-from services.embeddings import get_openai_client
+from services.embeddings import get_gemini_client
 from utils.text import sanitize_for_llm
 
 logger = logging.getLogger(__name__)
@@ -57,7 +57,7 @@ async def extract_claims(
     Run the Claim Extractor agent against the given article text.
     Returns a ClaimExtractionResult with claims list.
     """
-    client = get_openai_client()
+    client = get_gemini_client()
     safe_text = sanitize_for_llm(article_text)
     user_prompt = USER_PROMPT_TEMPLATE.format(
         url_or_none=article_url or "N/A",
@@ -66,17 +66,16 @@ async def extract_claims(
 
     for attempt in range(MAX_RETRIES + 1):
         try:
-            response = await client.chat.completions.create(
-                model="gpt-4o",
-                temperature=0,
-                response_format={"type": "json_object"},
-                messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": user_prompt},
-                ],
-                timeout=30.0,
+            response = await client.aio.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=user_prompt,
+                config=types.GenerateContentConfig(
+                    system_instruction=SYSTEM_PROMPT,
+                    temperature=0,
+                    response_mime_type="application/json",
+                )
             )
-            raw = response.choices[0].message.content
+            raw = response.text
             data = json.loads(raw)
             claims_data = data.get("claims", [])
             claims = [ClaimSchema(**c) for c in claims_data]

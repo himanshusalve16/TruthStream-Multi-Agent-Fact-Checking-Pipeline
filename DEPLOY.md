@@ -1,6 +1,6 @@
 # TruthStream Deployment Guide
 
-> For **Docker Compose** (local/VPS), **AWS** (EC2 / ECS), and how to obtain **OpenAI / SerpAPI** API keys (DuckDuckGo search needs no key), see **[docs/API-KEYS-AND-DEPLOYMENT.md](docs/API-KEYS-AND-DEPLOYMENT.md)**.
+> For **Docker Compose** (local/VPS), **AWS** (EC2 / ECS), and how to obtain **Gemini / SerpAPI** API keys (DuckDuckGo search needs no key), see **[docs/API-KEYS-AND-DEPLOYMENT.md](docs/API-KEYS-AND-DEPLOYMENT.md)**.
 
 ## Overview
 
@@ -35,7 +35,7 @@ CREATE EXTENSION IF NOT EXISTS pgcrypto;
 |----------|-------|
 | `DATABASE_URL` | `${{Postgres.DATABASE_URL}}` (or jdbc-style converted to postgresql://) |
 | `REDIS_URL` | `${{Redis.REDIS_URL}}` |
-| `OPENAI_API_KEY` | your key |
+| `GEMINI_API_KEY` | your key |
 | `SERPAPI_KEY` | optional — omit for free DuckDuckGo search |
 | `INTERNAL_API_SECRET` | random 32+ char string |
 
@@ -54,9 +54,7 @@ CREATE EXTENSION IF NOT EXISTS pgcrypto;
 | `SPRING_DATA_REDIS_HOST` | from Redis |
 | `SPRING_DATA_REDIS_PORT` | `6379` |
 | `FASTAPI_BASE_URL` | AI service internal/public URL |
-| `JWT_SECRET` | 64+ char random hex |
 | `INTERNAL_API_SECRET` | same as AI service |
-| `JWT_EXPIRY_MS` | `3600000` |
 
 3. Generate domain for HTTPS.
 

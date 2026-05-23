@@ -34,7 +34,7 @@ The intelligence layer. On receiving a job from Spring Boot:
 4. Runs the judge agent
 5. Publishes incremental SSE events to Redis pub/sub as each step completes
 
-**Why it exists:** Python has the best ecosystem for LLM orchestration (LangChain or raw OpenAI SDK), web scraping (httpx + BeautifulSoup), and vector ops (pgvector via psycopg2/asyncpg).
+**Why it exists:** Python has the best ecosystem for LLM orchestration (Google GenAI SDK), web scraping (httpx + BeautifulSoup), and vector ops (pgvector via psycopg2/asyncpg).
 
 #### 2.4 PostgreSQL + pgvector (`/db`)
 Primary persistence. Stores users, jobs, articles, claims, sources, verdicts, and an append-only audit log. The `pgvector` extension stores claim embeddings for deduplication and lookup of prior similar verdicts.
@@ -65,7 +65,7 @@ FastAPI (port 8000)           Redis
   │  BRPOP job_queue           ◄──── Spring Boot LPUSH
   │  PUBLISH job:{id}:events   ────► Spring Boot SUBSCRIBE
   │
-  ├─► OpenAI API (LLM calls)
+  ├─► Gemini API (LLM calls)
   ├─► SerpAPI / Brave Search API (source discovery)
   ├─► httpx (web scraping)
   └─► PostgreSQL (reads/writes via asyncpg)
@@ -97,7 +97,7 @@ FastAPI (port 8000)           Redis
 4. Claim Extractor Agent:
    a. Sends article text to LLM with extraction prompt
    b. Receives JSON array of claims
-   c. For each claim: compute embedding (OpenAI text-embedding-3-small)
+   c. For each claim: compute embedding (Gemini text-embedding-004)
    d. Check pgvector for near-duplicate claims (cosine distance < 0.1)
    e. Insert new claim rows; reuse prior verdicts for duplicates
    f. PUBLISH event: {type:"claims_extracted", data:{claims:[...]}}
@@ -376,7 +376,7 @@ CREATE TABLE claims (
   context_quote   TEXT,
   claim_type      TEXT,
   checkability    TEXT,
-  embedding       VECTOR(1536),
+  embedding       VECTOR(768),
   created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX idx_claims_job_id ON claims(job_id);
@@ -497,7 +497,7 @@ The `payload` JSONB column stores a snapshot of relevant data at that moment. Th
 ### Job Endpoints
 
 #### `POST /api/jobs`
-Requires `Authorization: Bearer <token>`
+Requires no auth (publicly accessible during dev prototype phase)
 ```json
 // Request (URL mode)
 {"input_type": "url", "url": "https://example.com/article"}
@@ -738,7 +738,7 @@ ai-service/
 ├── services/
 │   ├── scraper.py            # httpx + BeautifulSoup
 │   ├── search.py             # SerpAPI / Brave wrapper
-│   ├── embeddings.py         # OpenAI embedding calls
+│   ├── embeddings.py         # Gemini embedding calls
 │   └── redis_publisher.py    # Redis pub/sub publish helpers
 ├── db/
 │   ├── connection.py         # asyncpg pool
@@ -1498,7 +1498,7 @@ judge-synthesized verdict — all streamed live to the browser.
 Stack:
 - Frontend:   React + D3 (Vite), deployed on Vercel
 - API Gateway: Spring Boot (Java), JWT auth, SSE relay
-- AI Service: Python FastAPI, 4 LLM agents (OpenAI gpt-4o)
+- AI Service: Python 3.12, FastAPI, Gemini 2.5 Flash, 4 agents
 - Database:   PostgreSQL 16 + pgvector (claims deduplication)
 - Queue/Cache: Redis (job queue, pub/sub, rate limiting)
 - Search:     SerpAPI + Brave Search API

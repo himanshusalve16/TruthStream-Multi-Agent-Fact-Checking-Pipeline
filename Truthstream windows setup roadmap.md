@@ -471,15 +471,13 @@ REDIS_PORT=6379
 
 # Spring Boot
 SPRING_PORT=8080
-JWT_SECRET=replace-with-64-char-secret-do-not-use-this-in-production
-JWT_EXPIRY_MS=3600000
 
 # FastAPI
 FASTAPI_PORT=8000
 FASTAPI_BASE_URL=http://localhost:8000
 
 # AI / External APIs
-OPENAI_API_KEY=sk-replace-me
+GEMINI_API_KEY=sk-replace-me
 SERPAPI_KEY=replace-me
 BRAVE_API_KEY=replace-me
 
@@ -493,16 +491,6 @@ INTERNAL_API_SECRET=replace-with-random-32-char-string
 Copy the example to `.env`:
 ```powershell
 Copy-Item .env.example .env
-```
-
-**Generate a JWT secret** (PowerShell has built-in crypto — no openssl needed):
-```powershell
-# Generate a 64-character hex secret
-$bytes = New-Object byte[] 32
-[System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
-$secret = [System.BitConverter]::ToString($bytes) -replace '-', ''
-Write-Host "JWT_SECRET=$secret"
-# Copy the output and paste it into .env as JWT_SECRET=...
 ```
 
 **Generate the internal API secret:**
@@ -519,10 +507,9 @@ code .env
 ```
 
 Fill in:
-- `JWT_SECRET` — paste the 64-char hex you generated
 - `INTERNAL_API_SECRET` — paste the 32-char hex you generated
 - `DB_PASSWORD` — any strong password (e.g., `TruthStream2024!`)
-- `OPENAI_API_KEY` — from https://platform.openai.com/api-keys
+- `GEMINI_API_KEY` — from https://aistudio.google.com/app/apikey
 - `SERPAPI_KEY` — from https://serpapi.com (100 free searches/month)
 - `BRAVE_API_KEY` — from https://api.search.brave.com (2000 free queries/month)
 
@@ -581,7 +568,7 @@ services:
     environment:
       DATABASE_URL: postgresql://${DB_USER}:${DB_PASSWORD}@db:${DB_PORT}/${DB_NAME}
       REDIS_URL: redis://redis:6379
-      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
       SERPAPI_KEY: ${SERPAPI_KEY}
       BRAVE_API_KEY: ${BRAVE_API_KEY}
       INTERNAL_API_SECRET: ${INTERNAL_API_SECRET}
@@ -606,8 +593,6 @@ services:
       SPRING_DATA_REDIS_HOST: redis
       SPRING_DATA_REDIS_PORT: 6379
       FASTAPI_BASE_URL: http://ai-service:8000
-      JWT_SECRET: ${JWT_SECRET}
-      JWT_EXPIRY_MS: ${JWT_EXPIRY_MS}
       INTERNAL_API_SECRET: ${INTERNAL_API_SECRET}
     depends_on:
       db:
@@ -753,7 +738,7 @@ CREATE TABLE claims (
   context_quote TEXT,
   claim_type    TEXT,
   checkability  TEXT,
-  embedding     VECTOR(1536),
+  embedding     VECTOR(768),
   created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX idx_claims_job_id ON claims(job_id);

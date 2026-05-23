@@ -8,8 +8,7 @@ export function useJobStream(jobId: string | null) {
   useEffect(() => {
     if (!jobId) return
 
-    const token = localStorage.getItem('access_token')
-    const url = `/api/jobs/${jobId}/stream${token ? `?token=${encodeURIComponent(token)}` : ''}`
+    const url = `/api/jobs/${jobId}/stream`
 
     const es = new EventSource(url)
     esRef.current = es

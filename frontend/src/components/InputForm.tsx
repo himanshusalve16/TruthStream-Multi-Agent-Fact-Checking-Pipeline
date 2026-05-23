@@ -17,10 +17,6 @@ export default function InputForm() {
     setError('')
     setLoading(true)
 
-    if (!localStorage.getItem('access_token')) {
-      navigate('/login')
-      return
-    }
 
     try {
       dispatch({ type: 'RESET' })

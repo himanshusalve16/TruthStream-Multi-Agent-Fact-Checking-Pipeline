@@ -1,14 +1,7 @@
-import { Link, useNavigate } from 'react-router-dom'
+import { Link } from 'react-router-dom'
 import InputForm from '../components/InputForm'
 
 export default function LandingPage() {
-  const token = localStorage.getItem('access_token')
-  const navigate = useNavigate()
-
-  const handleLogout = () => {
-    localStorage.removeItem('access_token')
-    navigate('/')
-  }
 
   return (
     <div>
@@ -16,23 +9,7 @@ export default function LandingPage() {
       <nav className="nav">
         <div className="container nav-inner">
           <span className="nav-logo">⚡ TruthStream</span>
-          <div className="nav-links">
-            {token ? (
-              <>
-                <Link to="/history">History</Link>
-                <button className="btn btn-secondary" style={{ padding: '7px 18px', fontSize: '0.85rem' }} onClick={handleLogout}>
-                  Log out
-                </button>
-              </>
-            ) : (
-              <>
-                <Link to="/login">Sign in</Link>
-                <Link to="/register" className="btn btn-primary" style={{ padding: '7px 18px', fontSize: '0.85rem' }}>
-                  Get started
-                </Link>
-              </>
-            )}
-          </div>
+            <Link to="/history">History</Link>
         </div>
       </nav>
 

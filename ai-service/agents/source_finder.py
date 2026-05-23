@@ -4,8 +4,9 @@ import json
 import logging
 from typing import List
 
+from google.genai import types
 from models.schemas import ClaimSchema, ClaimSourcesResult, SourceSchema
-from services.embeddings import get_openai_client
+from services.embeddings import get_gemini_client
 from services.search import search_web, build_claim_query
 from services.scraper import scrape_url
 from utils.text import extract_domain
@@ -14,8 +15,6 @@ from utils.quality import score_source, is_paywalled
 logger = logging.getLogger(__name__)
 
 STANCE_SYSTEM_PROMPT = """You are evaluating whether web sources support or contradict a specific factual claim.
-
-Claim: "{claim_text}"
 
 For each source snippet below, classify the stance as:
 - "SUPPORTS": the source provides evidence that the claim is true
@@ -111,27 +110,25 @@ async def find_sources(
 
 
 async def _classify_stances(claim_text: str, sources: List[dict]) -> List[str]:
-    """Ask GPT-4o to classify stance of each source relative to the claim."""
-    client = get_openai_client()
+    """Ask Gemini to classify stance of each source relative to the claim."""
+    client = get_gemini_client()
     sources_json = json.dumps([
         {"source_index": i, "title": s.get("title", ""), "snippet": s.get("snippet", "")[:500]}
         for i, s in enumerate(sources)
     ])
-    system = STANCE_SYSTEM_PROMPT.format(claim_text=claim_text[:300])
-    user = f"Sources:\n{sources_json}"
+    user_content = f"Claim: {claim_text[:300]}\n\nSources:\n{sources_json}"
 
     try:
-        response = await client.chat.completions.create(
-            model="gpt-4o",
-            temperature=0,
-            response_format={"type": "json_object"},
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-            timeout=20.0,
+        response = await client.aio.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=user_content,
+            config=types.GenerateContentConfig(
+                system_instruction=STANCE_SYSTEM_PROMPT,
+                temperature=0,
+                response_mime_type="application/json",
+            )
         )
-        raw = response.choices[0].message.content
+        raw = response.text
         data = json.loads(raw)
         stances_data = data.get("stances", [])
         stances = ["UNCLEAR"] * len(sources)

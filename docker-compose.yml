@@ -1,94 +1,164 @@
 version: "3.9"
 
+# ─────────────────────────────────────────────────────────────────────────────
+# TruthStream — Docker Compose
+#
+# Single command: docker compose up --build
+#
+# Service startup order:
+#   db + redis (healthy) → ai-service (healthy) → backend (healthy) → frontend
+#
+# All inter-service communication uses Docker internal DNS names:
+#   db, redis, ai-service, backend
+# ─────────────────────────────────────────────────────────────────────────────
+
 services:
+
+  # ── PostgreSQL + pgvector ───────────────────────────────────────────────────
   db:
     image: pgvector/pgvector:pg16
     container_name: truthstream-db
     restart: unless-stopped
     environment:
-      POSTGRES_DB: ${DB_NAME}
-      POSTGRES_USER: ${DB_USER}
+      POSTGRES_DB:       ${DB_NAME}
+      POSTGRES_USER:     ${DB_USER}
       POSTGRES_PASSWORD: ${DB_PASSWORD}
     ports:
-      - "${DB_PORT}:5432"
+      - "${DB_PORT:-5432}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
-      - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
+      - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     healthcheck:
+      # pg_isready confirms the server is accepting connections on the right db/user
       test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
       interval: 5s
       timeout: 5s
-      retries: 10
+      retries: 12
+      start_period: 10s
+    networks:
+      - internal
 
+  # ── Redis ──────────────────────────────────────────────────────────────────
   redis:
     image: redis:7.2-alpine
     container_name: truthstream-redis
     restart: unless-stopped
     ports:
-      - "${REDIS_PORT}:6379"
-    command: redis-server --save "" --appendonly no
+      - "${REDIS_PORT:-6379}:6379"
+    # Disable persistence: this is a pub/sub + rate-limit cache, not a data store
+    command: redis-server --save "" --appendonly no --loglevel warning
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       timeout: 3s
-      retries: 5
+      retries: 6
+      start_period: 5s
+    networks:
+      - internal
 
+  # ── FastAPI AI Service ─────────────────────────────────────────────────────
   ai-service:
     build:
       context: ./ai-service
       dockerfile: Dockerfile
     container_name: truthstream-ai
-    restart: unless-stopped
+    # on-failure:3 handles transient startup crashes (e.g., DB not fully ready
+    # before our retry loop kicks in). unlimited restart would hide real bugs.
+    restart: on-failure:5
     ports:
-      - "${FASTAPI_PORT}:8000"
+      - "${FASTAPI_PORT:-8000}:8000"
     environment:
-      DATABASE_URL: postgresql://${DB_USER}:${DB_PASSWORD}@db:5432/${DB_NAME}
-      REDIS_URL: redis://redis:6379
-      OPENAI_API_KEY: ${OPENAI_API_KEY}
-      SERPAPI_KEY: ${SERPAPI_KEY:-replace-me}
+      # Always use Docker internal DNS — never localhost
+      DATABASE_URL:        postgresql://${DB_USER}:${DB_PASSWORD}@db:5432/${DB_NAME}
+      REDIS_URL:           redis://redis:6379
+      GEMINI_API_KEY:      ${GEMINI_API_KEY}
+      SERPAPI_KEY:         ${SERPAPI_KEY:-replace-me}
       INTERNAL_API_SECRET: ${INTERNAL_API_SECRET}
+      # Propagate to Python logging
+      LOG_LEVEL:           ${LOG_LEVEL:-INFO}
     depends_on:
       db:
         condition: service_healthy
       redis:
         condition: service_healthy
+    healthcheck:
+      # /health is a fast, dependency-free endpoint
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 8
+      start_period: 20s
+    networks:
+      - internal
 
+  # ── Spring Boot Backend ────────────────────────────────────────────────────
   backend:
     build:
       context: ./backend
       dockerfile: Dockerfile
     container_name: truthstream-backend
-    restart: unless-stopped
+    restart: on-failure:5
     ports:
-      - "${SPRING_PORT}:8080"
+      - "${SPRING_PORT:-8080}:8080"
     environment:
-      SPRING_DATASOURCE_URL: jdbc:postgresql://db:5432/${DB_NAME}
+      # Datasource — always Docker internal DNS
+      SPRING_DATASOURCE_URL:      jdbc:postgresql://db:5432/${DB_NAME}
       SPRING_DATASOURCE_USERNAME: ${DB_USER}
       SPRING_DATASOURCE_PASSWORD: ${DB_PASSWORD}
-      SPRING_DATA_REDIS_HOST: redis
-      SPRING_DATA_REDIS_PORT: 6379
-      FASTAPI_BASE_URL: http://ai-service:8000
-      JWT_SECRET: ${JWT_SECRET}
-      JWT_EXPIRY_MS: ${JWT_EXPIRY_MS}
-      INTERNAL_API_SECRET: ${INTERNAL_API_SECRET}
+      # Redis — always Docker internal DNS
+      SPRING_DATA_REDIS_HOST:     redis
+      SPRING_DATA_REDIS_PORT:     6379
+      # FastAPI — always Docker internal DNS, never localhost
+      FASTAPI_BASE_URL:           http://ai-service:8000
+      # JWT
+      JWT_SECRET:                 ${JWT_SECRET}
+      JWT_EXPIRY_MS:              ${JWT_EXPIRY_MS:-3600000}
+      # Internal service auth
+      INTERNAL_API_SECRET:        ${INTERNAL_API_SECRET}
+      # JVM tuning for containers
+      JAVA_OPTS:                  "-XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0"
     depends_on:
       db:
         condition: service_healthy
       redis:
         condition: service_healthy
       ai-service:
-        condition: service_started
+        condition: service_healthy
+    healthcheck:
+      # Spring Actuator health endpoint — returns 200 when fully ready
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/actuator/health | grep -q '\"status\":\"UP\"'"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 40s
+    networks:
+      - internal
 
+  # ── React Frontend (nginx) ─────────────────────────────────────────────────
   frontend:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+      args:
+        # The frontend calls /api which nginx proxies to backend.
+        # VITE_API_BASE_URL is empty so Vite uses relative /api paths.
+        VITE_API_BASE_URL: ""
     container_name: truthstream-frontend
     restart: unless-stopped
     ports:
-      - "3000:80"
+      - "${FRONTEND_PORT:-3000}:80"
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
+    networks:
+      - internal
 
+# ── Volumes ────────────────────────────────────────────────────────────────
 volumes:
   pgdata:
+    driver: local
+
+# ── Networks ───────────────────────────────────────────────────────────────
+networks:
+  internal:
+    driver: bridge

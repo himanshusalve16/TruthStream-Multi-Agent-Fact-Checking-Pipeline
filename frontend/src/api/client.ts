@@ -5,35 +5,9 @@ const client = axios.create({
   headers: { 'Content-Type': 'application/json' },
 })
 
-client.interceptors.request.use((config) => {
-  const token = localStorage.getItem('access_token')
-  if (token) config.headers.Authorization = `Bearer ${token}`
-  return config
-})
-
-client.interceptors.response.use(
-  (res) => res,
-  (err) => {
-    if (err.response?.status === 401) {
-      localStorage.removeItem('access_token')
-      window.location.href = '/login'
-    }
-    return Promise.reject(err)
-  }
-)
-
 export default client
 
 // ── API helpers ────────────────────────────────────────────────
-
-export const auth = {
-  register: (email: string, password: string) =>
-    client.post('/api/auth/register', { email, password }),
-  login: (email: string, password: string) =>
-    client.post<{ access_token: string; token_type: string; expires_in: number }>(
-      '/api/auth/login', { email, password }
-    ),
-}
 
 export const jobs = {
   submit: (payload: { input_type: 'url' | 'text'; url?: string; text?: string }) =>

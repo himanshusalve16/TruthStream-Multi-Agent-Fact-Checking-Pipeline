@@ -36,16 +36,93 @@ logger = logging.getLogger("truthstream.ai")
 
 NUM_WORKERS = 3
 
+# ──────────────────────────────────────────────────────────────
+# Startup helpers with retry
+# ──────────────────────────────────────────────────────────────
+
+_DB_MAX_RETRIES = 10
+_DB_RETRY_DELAY = 3.0   # seconds between attempts
+
+_REDIS_MAX_RETRIES = 8
+_REDIS_RETRY_DELAY = 2.0
+
+
+async def _connect_db_with_retry(database_url: str):
+    """
+    Attempt to create the asyncpg pool, retrying on failure.
+
+    Root cause this solves: Docker Compose's 'service_healthy' condition for
+    the db service only guarantees that pg_isready returned OK — meaning
+    Postgres is accepting connections. It does NOT guarantee that:
+      - Our specific database exists yet
+      - The Flyway migration (run by backend) has completed
+      - A transient network hiccup isn't occurring
+
+    Without retry, a single connection failure crashes the process.
+    """
+    last_error = None
+    for attempt in range(1, _DB_MAX_RETRIES + 1):
+        try:
+            pool = await init_db_pool(database_url)
+            logger.info("Database pool connected on attempt %d", attempt)
+            return pool
+        except Exception as exc:
+            last_error = exc
+            if attempt < _DB_MAX_RETRIES:
+                logger.warning(
+                    "DB connection attempt %d/%d failed: %s — retrying in %.0fs",
+                    attempt, _DB_MAX_RETRIES, exc, _DB_RETRY_DELAY
+                )
+                await asyncio.sleep(_DB_RETRY_DELAY)
+            else:
+                logger.error("DB connection failed after %d attempts", _DB_MAX_RETRIES)
+    raise RuntimeError(
+        f"Could not connect to database after {_DB_MAX_RETRIES} attempts"
+    ) from last_error
+
+
+async def _connect_redis_with_retry(redis_url: str) -> aioredis.Redis:
+    """
+    Attempt to connect to Redis, retrying on failure.
+
+    Root cause: even with redis healthcheck passing, the first ping from
+    our code can race against Redis being ready to serve on the internal
+    Docker bridge network.
+    """
+    last_error = None
+    for attempt in range(1, _REDIS_MAX_RETRIES + 1):
+        try:
+            client = aioredis.from_url(redis_url, decode_responses=False)
+            await client.ping()
+            logger.info("Redis connected on attempt %d", attempt)
+            return client
+        except Exception as exc:
+            last_error = exc
+            if attempt < _REDIS_MAX_RETRIES:
+                logger.warning(
+                    "Redis connection attempt %d/%d failed: %s — retrying in %.0fs",
+                    attempt, _REDIS_MAX_RETRIES, exc, _REDIS_RETRY_DELAY
+                )
+                await asyncio.sleep(_REDIS_RETRY_DELAY)
+            else:
+                logger.error("Redis connection failed after %d attempts", _REDIS_MAX_RETRIES)
+    raise RuntimeError(
+        f"Could not connect to Redis after {_REDIS_MAX_RETRIES} attempts"
+    ) from last_error
+
+
+# ──────────────────────────────────────────────────────────────
+# Lifespan
+# ──────────────────────────────────────────────────────────────
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup
+    # ── Startup ──────────────────────────────────────────────
     logger.info("Initializing database pool...")
-    app.state.db_pool = await init_db_pool(settings.database_url)
+    app.state.db_pool = await _connect_db_with_retry(settings.database_url)
 
     logger.info("Connecting to Redis...")
-    app.state.redis = aioredis.from_url(settings.redis_url, decode_responses=False)
-    await app.state.redis.ping()
+    app.state.redis = await _connect_redis_with_retry(settings.redis_url)
 
     logger.info("Starting %d job workers...", NUM_WORKERS)
     app.state.workers = [
@@ -56,7 +133,7 @@ async def lifespan(app: FastAPI):
     logger.info("AI service ready.")
     yield
 
-    # Shutdown
+    # ── Shutdown ─────────────────────────────────────────────
     logger.info("Shutting down workers...")
     for w in app.state.workers:
         w.cancel()

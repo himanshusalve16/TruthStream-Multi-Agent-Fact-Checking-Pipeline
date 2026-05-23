@@ -3,14 +3,34 @@ spring:
     name: truthstream-backend
 
   datasource:
-    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/truthstream}
-    username: ${SPRING_DATASOURCE_USERNAME:postgres}
-    password: ${SPRING_DATASOURCE_PASSWORD:changeme}
+    # These must be provided via environment variables. There is NO localhost fallback —
+    # if the env var is missing, the app fails immediately with a clear error rather than
+    # silently connecting to a local Postgres (which may not have the right schema).
+    url:      ${SPRING_DATASOURCE_URL}
+    username: ${SPRING_DATASOURCE_USERNAME}
+    password: ${SPRING_DATASOURCE_PASSWORD}
     driver-class-name: org.postgresql.Driver
     hikari:
-      maximum-pool-size: 10
-      minimum-idle: 2
-      connection-timeout: 30000
+      maximum-pool-size:     10
+      minimum-idle:          2
+      connection-timeout:    30000
+      # ──────────────────────────────────────────────────────────────────────
+      # initializationFailTimeout = -1 tells Hikari to retry connecting until
+      # connection-timeout expires, rather than failing immediately on startup.
+      #
+      # Root cause this solves: Docker Compose's service_healthy for the db
+      # service fires when pg_isready returns OK. pg_isready only checks that
+      # Postgres is accepting TCP connections — it does NOT guarantee that:
+      #   • The specific database (truthstream) exists
+      #   • Flyway has finished applying migrations
+      #   • The connection pool can actually establish a JDBC connection
+      #
+      # Without this setting, if Hikari's first connection attempt fails, the
+      # Spring Boot context fails to start and the container exits.
+      # With -1, Hikari keeps retrying for up to connection-timeout ms.
+      # ──────────────────────────────────────────────────────────────────────
+      initialization-fail-timeout: -1
+      keepalive-time:        60000
 
   jpa:
     hibernate:
@@ -22,21 +42,26 @@ spring:
         format_sql: false
 
   flyway:
-    enabled: true
-    locations: classpath:db/migration
+    enabled:           true
+    locations:         classpath:db/migration
     baseline-on-migrate: true
     validate-on-migrate: true
+    # Connect-retries: Flyway will retry the DB connection this many times
+    # before giving up. Combined with Hikari's initialization-fail-timeout,
+    # this makes Flyway resilient to the DB not being 100% ready at the
+    # exact moment Spring Boot starts.
+    connect-retries:   5
 
   data:
     redis:
-      host: ${SPRING_DATA_REDIS_HOST:localhost}
-      port: ${SPRING_DATA_REDIS_PORT:6379}
+      host:    ${SPRING_DATA_REDIS_HOST}
+      port:    ${SPRING_DATA_REDIS_PORT}
       timeout: 5000ms
       lettuce:
         pool:
           max-active: 8
-          max-idle: 8
-          min-idle: 1
+          max-idle:   8
+          min-idle:   1
 
   mvc:
     async:
@@ -50,7 +75,7 @@ spring:
   servlet:
     multipart:
       max-request-size: 1MB
-      max-file-size: 1MB
+      max-file-size:    1MB
 
 server:
   port: ${SPRING_PORT:8080}
@@ -59,10 +84,10 @@ server:
 
 app:
   jwt:
-    secret: ${JWT_SECRET}
+    secret:    ${JWT_SECRET}
     expiry-ms: ${JWT_EXPIRY_MS:3600000}
   fastapi:
-    base-url: ${FASTAPI_BASE_URL:http://localhost:8000}
+    base-url:        ${FASTAPI_BASE_URL}
     timeout-seconds: 30
   internal:
     api-secret: ${INTERNAL_API_SECRET}
@@ -81,8 +106,9 @@ management:
 
 logging:
   level:
-    com.truthstream: DEBUG
-    org.springframework.security: INFO
-    org.springframework.web: INFO
+    com.truthstream:               DEBUG
+    org.springframework.security:  INFO
+    org.springframework.web:       INFO
+    com.zaxxer.hikari:             WARN
   pattern:
     console: "%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n"

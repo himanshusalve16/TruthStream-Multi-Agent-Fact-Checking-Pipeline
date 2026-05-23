@@ -1,37 +1,25 @@
-# =========================
-# Logs
-# =========================
+# ─────────────────────────────────────────────────────────────────────────────
+# TruthStream .gitignore
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Logs ──────────────────────────────────────────────────────────────────────
 logs/
 *.log
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
-lerna-debug.log*
 
-# =========================
-# Dependencies / virtual envs
-# =========================
+# ── Node / Frontend ───────────────────────────────────────────────────────────
 node_modules/
+dist/
+dist-ssr/
+
+# ── Python ────────────────────────────────────────────────────────────────────
 venv/
 .venv/
 */venv/
 */.venv/
-ai-service/venv/
-ai-service/.venv/
-
-# =========================
-# Build output
-# =========================
-dist/
-dist-ssr/
-build/
-target/
-out/
-
-# =========================
-# Python cache
-# =========================
 __pycache__/
 *.py[cod]
 *.pyo
@@ -39,20 +27,35 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+htmlcov/
+.coverage
+*.egg-info/
 
-# =========================
-# Environment files
-# =========================
+# ── Java / Maven ──────────────────────────────────────────────────────────────
+target/
+*.class
+*.jar
+*.war
+*.ear
+.mvn/repository/
+
+# ── Environment / Secrets ─────────────────────────────────────────────────────
+# .env contains real secrets — NEVER commit it.
+# .env.example is safe and SHOULD be committed.
 .env
-.env.*
-*.local
+.env.local
+.env.*.local
+# Note: .env.example is intentionally NOT listed here
 
-# =========================
-# Editor directories and files
-# =========================
+# ── Docker ────────────────────────────────────────────────────────────────────
+# Do not ignore docker-compose.yml, Dockerfiles, or .dockerignore files —
+# these are infrastructure-as-code and must be committed.
+
+# ── Editor ────────────────────────────────────────────────────────────────────
 .vscode/*
 !.vscode/extensions.json
 .idea/
+*.iml
 .DS_Store
 Thumbs.db
 *.suo
@@ -60,8 +63,3 @@ Thumbs.db
 *.njsproj
 *.sln
 *.sw?
-
-# =========================
-# Java / Maven
-# =========================
-*.class

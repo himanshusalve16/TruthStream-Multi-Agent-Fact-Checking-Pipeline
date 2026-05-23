@@ -4,11 +4,12 @@ import json
 import logging
 from typing import List, Dict
 
+from google.genai import types
 from models.schemas import (
     ClaimSchema, ClaimSourcesResult, BiasResult,
     JudgeResult, ClaimVerdictSchema
 )
-from services.embeddings import get_openai_client
+from services.embeddings import get_gemini_client
 from utils.verdict_calc import compute_fallback_verdict
 
 logger = logging.getLogger(__name__)
@@ -67,7 +68,7 @@ async def run_judge(
     Synthesize all evidence into final per-claim and overall verdicts.
     Falls back to computed verdicts if LLM fails.
     """
-    client = get_openai_client()
+    client = get_gemini_client()
 
     # Build input payload for LLM
     claims_payload = []
@@ -101,17 +102,16 @@ async def run_judge(
 
     for attempt in range(MAX_RETRIES + 1):
         try:
-            response = await client.chat.completions.create(
-                model="gpt-4o",
-                temperature=0,
-                response_format={"type": "json_object"},
-                messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": user_content},
-                ],
-                timeout=60.0,  # Judge may need more time with many claims
+            response = await client.aio.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=user_content,
+                config=types.GenerateContentConfig(
+                    system_instruction=SYSTEM_PROMPT,
+                    temperature=0,
+                    response_mime_type="application/json",
+                )
             )
-            raw = response.choices[0].message.content
+            raw = response.text
             data = json.loads(raw)
 
             claim_verdicts = [

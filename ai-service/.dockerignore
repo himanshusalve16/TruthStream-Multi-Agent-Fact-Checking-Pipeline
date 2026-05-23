@@ -1,13 +1,36 @@
-# Exclude local virtual environments — Docker installs from requirements.txt
+# ── Python virtual environments ───────────────────────────────────────────────
+# These contain platform-specific binaries. Docker installs from requirements.txt.
 .venv/
 venv/
 
-# Exclude Python cache
+# ── Python bytecode cache ─────────────────────────────────────────────────────
 __pycache__/
 *.pyc
 *.pyo
-.pytest_cache/
+*.pyd
+*.pyc
 
-# Exclude test artifacts
+# ── Test artifacts ────────────────────────────────────────────────────────────
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
 tests/
+htmlcov/
+.coverage
+
+# ── Local environment files ───────────────────────────────────────────────────
+# Docker Compose injects env vars at runtime via the environment: block.
+# Never bake secrets into the image.
 .env
+.env.*
+*.local
+
+# ── Editor / OS junk ──────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# ── Git ───────────────────────────────────────────────────────────────────────
+.git/
+.gitignore

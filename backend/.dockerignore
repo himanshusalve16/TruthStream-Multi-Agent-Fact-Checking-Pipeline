@@ -1,12 +1,28 @@
-# Exclude build outputs — Docker builds from source
+# ── Build outputs (Docker builds from source, not from pre-built artifacts) ───
 target/
 
-# Exclude local Maven cache
+# ── Maven local repository (not needed in Docker context) ─────────────────────
 .mvn/repository/
 
-# Exclude IDE files
+# ── Windows-only Maven wrapper (unnecessary in Linux containers) ───────────────
+mvnw.cmd
+
+# ── Editor / IDE files ────────────────────────────────────────────────────────
 .idea/
 *.iml
 .settings/
 .classpath
 .project
+.vscode/
+
+# ── OS files ──────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ── Git ───────────────────────────────────────────────────────────────────────
+.git/
+.gitignore
+
+# ── Local env files (secrets must never be baked into the image) ──────────────
+.env
+.env.*
