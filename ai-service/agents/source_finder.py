@@ -4,9 +4,11 @@ import json
 import logging
 from typing import List
 
+from google import genai
 from google.genai import types
 from models.schemas import ClaimSchema, ClaimSourcesResult, SourceSchema
-from services.embeddings import get_gemini_client
+from services.gemini import execute_gemini_call
+from config import settings
 from services.search import search_web, build_claim_query
 from services.scraper import scrape_url
 from utils.text import extract_domain
@@ -111,16 +113,15 @@ async def find_sources(
 
 async def _classify_stances(claim_text: str, sources: List[dict]) -> List[str]:
     """Ask Gemini to classify stance of each source relative to the claim."""
-    client = get_gemini_client()
     sources_json = json.dumps([
         {"source_index": i, "title": s.get("title", ""), "snippet": s.get("snippet", "")[:500]}
         for i, s in enumerate(sources)
     ])
     user_content = f"Claim: {claim_text[:300]}\n\nSources:\n{sources_json}"
 
-    try:
-        response = await client.aio.models.generate_content(
-            model="gemini-2.5-flash",
+    async def call_stance(client: genai.Client):
+        return await client.aio.models.generate_content(
+            model=settings.gemini_model,
             contents=user_content,
             config=types.GenerateContentConfig(
                 system_instruction=STANCE_SYSTEM_PROMPT,
@@ -128,6 +129,9 @@ async def _classify_stances(claim_text: str, sources: List[dict]) -> List[str]:
                 response_mime_type="application/json",
             )
         )
+
+    try:
+        response = await execute_gemini_call(call_stance)
         raw = response.text
         data = json.loads(raw)
         stances_data = data.get("stances", [])

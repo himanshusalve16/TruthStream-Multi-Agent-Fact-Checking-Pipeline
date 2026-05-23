@@ -4,12 +4,14 @@ import json
 import logging
 from typing import List, Dict
 
+from google import genai
 from google.genai import types
 from models.schemas import (
     ClaimSchema, ClaimSourcesResult, BiasResult,
     JudgeResult, ClaimVerdictSchema
 )
-from services.embeddings import get_gemini_client
+from services.gemini import execute_gemini_call
+from config import settings
 from utils.verdict_calc import compute_fallback_verdict
 
 logger = logging.getLogger(__name__)
@@ -54,9 +56,6 @@ Output JSON only using this schema:
   ]
 }"""
 
-MAX_RETRIES = 2
-RETRY_DELAY = 5.0
-
 
 async def run_judge(
         claims: List[ClaimSchema],
@@ -68,8 +67,6 @@ async def run_judge(
     Synthesize all evidence into final per-claim and overall verdicts.
     Falls back to computed verdicts if LLM fails.
     """
-    client = get_gemini_client()
-
     # Build input payload for LLM
     claims_payload = []
     for claim in claims:
@@ -100,45 +97,43 @@ async def run_judge(
         },
     }, ensure_ascii=False)
 
-    for attempt in range(MAX_RETRIES + 1):
-        try:
-            response = await client.aio.models.generate_content(
-                model="gemini-2.5-flash",
-                contents=user_content,
-                config=types.GenerateContentConfig(
-                    system_instruction=SYSTEM_PROMPT,
-                    temperature=0,
-                    response_mime_type="application/json",
-                )
+    async def call_judge(client: genai.Client):
+        return await client.aio.models.generate_content(
+            model=settings.gemini_model,
+            contents=user_content,
+            config=types.GenerateContentConfig(
+                system_instruction=SYSTEM_PROMPT,
+                temperature=0,
+                response_mime_type="application/json",
             )
-            raw = response.text
-            data = json.loads(raw)
+        )
 
-            claim_verdicts = [
-                ClaimVerdictSchema(
-                    claim_id=v.get("claim_id", ""),
-                    verdict=v.get("verdict", "UNVERIFIABLE"),
-                    confidence=_clamp(float(v.get("confidence", 0.1))),
-                    reasoning=v.get("reasoning", ""),
-                    key_source_indices=v.get("key_source_indices", []),
-                )
-                for v in data.get("claim_verdicts", [])
-            ]
+    try:
+        response = await execute_gemini_call(call_judge)
+        raw = response.text
+        data = json.loads(raw)
 
-            return JudgeResult(
-                overall_verdict=data.get("overall_verdict", "UNVERIFIABLE"),
-                overall_confidence=_clamp(float(data.get("overall_confidence", 0.1))),
-                overall_summary=data.get("overall_summary", ""),
-                claim_verdicts=claim_verdicts,
+        claim_verdicts = [
+            ClaimVerdictSchema(
+                claim_id=v.get("claim_id", ""),
+                verdict=v.get("verdict", "UNVERIFIABLE"),
+                confidence=_clamp(float(v.get("confidence", 0.1))),
+                reasoning=v.get("reasoning", ""),
+                key_source_indices=v.get("key_source_indices", []),
             )
+            for v in data.get("claim_verdicts", [])
+        ]
 
-        except Exception as e:
-            logger.warning("Judge attempt %d failed: %s", attempt + 1, e)
-            if attempt < MAX_RETRIES:
-                await asyncio.sleep(RETRY_DELAY)
-            else:
-                logger.error("Judge agent failed after all retries, using computed fallback")
-                return compute_fallback_verdict(claims, sources_by_claim, bias_result)
+        return JudgeResult(
+            overall_verdict=data.get("overall_verdict", "UNVERIFIABLE"),
+            overall_confidence=_clamp(float(data.get("overall_confidence", 0.1))),
+            overall_summary=data.get("overall_summary", ""),
+            claim_verdicts=claim_verdicts,
+        )
+
+    except Exception as e:
+        logger.error("Judge agent failed: %s, using computed fallback", e)
+        return compute_fallback_verdict(claims, sources_by_claim, bias_result)
 
 
 def _clamp(v: float, lo: float = 0.0, hi: float = 1.0) -> float:

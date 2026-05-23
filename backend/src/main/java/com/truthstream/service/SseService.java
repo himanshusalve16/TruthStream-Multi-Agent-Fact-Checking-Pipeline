@@ -26,8 +26,18 @@ public class SseService {
     private final RedisMessageListenerContainer listenerContainer;
     private final ObjectMapper objectMapper;
 
-    // job_id -> SseEmitter
-    private final Map<UUID, SseEmitter> emitters = new ConcurrentHashMap<>();
+    // Thread-safe wrapper to track emitter state
+    private static class EmitterWrapper {
+        final SseEmitter emitter;
+        volatile boolean completed = false;
+
+        EmitterWrapper(SseEmitter emitter) {
+            this.emitter = emitter;
+        }
+    }
+
+    // job_id -> EmitterWrapper
+    private final Map<UUID, EmitterWrapper> emitters = new ConcurrentHashMap<>();
     // job_id -> MessageListener (kept so we can remove it on completion)
     private final Map<UUID, MessageListener> listeners = new ConcurrentHashMap<>();
 
@@ -36,16 +46,20 @@ public class SseService {
      */
     public SseEmitter register(UUID jobId) {
         SseEmitter emitter = new SseEmitter(300_000L); // 5-minute timeout
+        EmitterWrapper wrapper = new EmitterWrapper(emitter);
 
-        emitters.put(jobId, emitter);
+        emitters.put(jobId, wrapper);
 
-        emitter.onCompletion(() -> cleanup(jobId));
+        emitter.onCompletion(() -> {
+            log.debug("SSE complete callback for job {}", jobId);
+            cleanup(jobId);
+        });
         emitter.onTimeout(() -> {
-            log.debug("SSE timeout for job {}", jobId);
+            log.debug("SSE timeout callback for job {}", jobId);
             cleanup(jobId);
         });
         emitter.onError(e -> {
-            log.warn("SSE error for job {}: {}", jobId, e.getMessage());
+            log.warn("SSE error callback for job {}: {}", jobId, e.getMessage());
             cleanup(jobId);
         });
 
@@ -60,8 +74,8 @@ public class SseService {
     }
 
     private void handleRedisMessage(UUID jobId, Message message) {
-        SseEmitter emitter = emitters.get(jobId);
-        if (emitter == null) {
+        EmitterWrapper wrapper = emitters.get(jobId);
+        if (wrapper == null || wrapper.completed) {
             return;
         }
 
@@ -71,12 +85,30 @@ public class SseService {
             String type = String.valueOf(eventMap.getOrDefault("type", "message"));
             Object data = eventMap.containsKey("data") ? eventMap.get("data") : eventMap;
 
-            emitter.send(SseEmitter.event()
-                    .name(type)
-                    .data(objectMapper.writeValueAsString(data)));
+            // Send event if emitter is not completed
+            if (!wrapper.completed) {
+                try {
+                    wrapper.emitter.send(SseEmitter.event()
+                            .name(type)
+                            .data(objectMapper.writeValueAsString(data)));
+                } catch (IllegalStateException e) {
+                    log.warn("ResponseBodyEmitter already completed for job {} when sending event {}: {}", jobId, type, e.getMessage());
+                    wrapper.completed = true;
+                    cleanup(jobId);
+                    return;
+                }
+            }
 
+            // Complete emitter on done or error status
             if ("done".equals(type) || "error".equals(type)) {
-                emitter.complete();
+                if (!wrapper.completed) {
+                    wrapper.completed = true;
+                    try {
+                        wrapper.emitter.complete();
+                    } catch (Exception ex) {
+                        log.debug("Error completing emitter for job {}: {}", jobId, ex.getMessage());
+                    }
+                }
                 cleanup(jobId);
             }
         } catch (IOException e) {
@@ -86,11 +118,19 @@ public class SseService {
     }
 
     private void cleanup(UUID jobId) {
-        emitters.remove(jobId);
+        EmitterWrapper wrapper = emitters.remove(jobId);
+        if (wrapper != null) {
+            wrapper.completed = true;
+        }
         MessageListener listener = listeners.remove(jobId);
         if (listener != null) {
-            String channel = "job:" + jobId + ":events";
-            listenerContainer.removeMessageListener(listener, new PatternTopic(channel));
+            try {
+                String channel = "job:" + jobId + ":events";
+                listenerContainer.removeMessageListener(listener, new PatternTopic(channel));
+                log.debug("SSE listener removed for job {}", jobId);
+            } catch (Exception e) {
+                log.error("Failed to remove Redis listener for job {}: {}", jobId, e.getMessage());
+            }
         }
         log.debug("SSE cleaned up for job {}", jobId);
     }

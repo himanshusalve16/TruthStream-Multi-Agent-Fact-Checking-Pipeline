@@ -247,7 +247,11 @@ async def process_job(job_id: str, redis: aioredis.Redis, pool) -> None:
         try:
             extraction_result = await extract_claims(cleaned, input_url)
         except Exception as e:
-            await _fail_job(pool, redis, job_id, f"Claim extraction failed: {e}")
+            err_msg = str(e)
+            if "AI provider quota temporarily exceeded" in err_msg:
+                await _fail_job(pool, redis, job_id, "AI provider quota temporarily exceeded. Please try again later.")
+            else:
+                await _fail_job(pool, redis, job_id, f"Claim extraction failed: {e}")
             return
 
         claims = extraction_result.claims
@@ -416,8 +420,12 @@ async def process_job(job_id: str, redis: aioredis.Redis, pool) -> None:
                     judge_result.overall_verdict, judge_result.overall_confidence)
 
     except Exception as e:
-        logger.exception("Unhandled error processing job %s: %s", job_id, e)
-        await _fail_job(pool, redis, job_id, f"Internal pipeline error: {str(e)[:200]}")
+        err_msg = str(e)
+        if "AI provider quota temporarily exceeded" in err_msg:
+            await _fail_job(pool, redis, job_id, "AI provider quota temporarily exceeded. Please try again later.")
+        else:
+            logger.exception("Unhandled error processing job %s: %s", job_id, e)
+            await _fail_job(pool, redis, job_id, f"Internal pipeline error: {str(e)[:200]}")
 
 
 async def _fail_job(pool, redis, job_id: str, message: str) -> None:

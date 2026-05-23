@@ -27,6 +27,10 @@ public class RedisConfig {
             RedisConnectionFactory factory) {
         RedisMessageListenerContainer container = new RedisMessageListenerContainer();
         container.setConnectionFactory(factory);
+        container.setErrorHandler(t -> {
+            org.slf4j.LoggerFactory.getLogger(RedisMessageListenerContainer.class)
+                    .error("Error in Redis message listener: {}", t.getMessage(), t);
+        });
         return container;
     }
 }

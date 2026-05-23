@@ -4,10 +4,12 @@ import json
 import logging
 from typing import List
 
+from google import genai
 from google.genai import types
 
 from models.schemas import ClaimSchema, ClaimExtractionResult
-from services.embeddings import get_gemini_client
+from services.gemini import execute_gemini_call
+from config import settings
 from utils.text import sanitize_for_llm
 
 logger = logging.getLogger(__name__)
@@ -45,9 +47,6 @@ Article text:
 
 Extract all verifiable factual claims."""
 
-MAX_RETRIES = 2
-RETRY_DELAY = 5.0
-
 
 async def extract_claims(
         article_text: str,
@@ -57,36 +56,33 @@ async def extract_claims(
     Run the Claim Extractor agent against the given article text.
     Returns a ClaimExtractionResult with claims list.
     """
-    client = get_gemini_client()
     safe_text = sanitize_for_llm(article_text)
     user_prompt = USER_PROMPT_TEMPLATE.format(
         url_or_none=article_url or "N/A",
         article_text=safe_text,
     )
 
-    for attempt in range(MAX_RETRIES + 1):
-        try:
-            response = await client.aio.models.generate_content(
-                model="gemini-2.5-flash",
-                contents=user_prompt,
-                config=types.GenerateContentConfig(
-                    system_instruction=SYSTEM_PROMPT,
-                    temperature=0,
-                    response_mime_type="application/json",
-                )
+    async def call_extractor(client: genai.Client):
+        return await client.aio.models.generate_content(
+            model=settings.gemini_model,
+            contents=user_prompt,
+            config=types.GenerateContentConfig(
+                system_instruction=SYSTEM_PROMPT,
+                temperature=0,
+                response_mime_type="application/json",
             )
-            raw = response.text
-            data = json.loads(raw)
-            claims_data = data.get("claims", [])
-            claims = [ClaimSchema(**c) for c in claims_data]
-            return ClaimExtractionResult(
-                claims=claims,
-                extraction_notes=data.get("extraction_notes", ""),
-            )
-        except Exception as e:
-            logger.warning("Claim extraction attempt %d failed: %s", attempt + 1, e)
-            if attempt < MAX_RETRIES:
-                await asyncio.sleep(RETRY_DELAY)
-            else:
-                logger.error("All extraction attempts failed")
-                raise RuntimeError(f"Claim extraction failed after {MAX_RETRIES + 1} attempts: {e}")
+        )
+
+    try:
+        response = await execute_gemini_call(call_extractor)
+        raw = response.text
+        data = json.loads(raw)
+        claims_data = data.get("claims", [])
+        claims = [ClaimSchema(**c) for c in claims_data]
+        return ClaimExtractionResult(
+            claims=claims,
+            extraction_notes=data.get("extraction_notes", ""),
+        )
+    except Exception as e:
+        logger.error("Claim extraction failed: %s", e)
+        raise RuntimeError(f"Claim extraction failed: {e}")

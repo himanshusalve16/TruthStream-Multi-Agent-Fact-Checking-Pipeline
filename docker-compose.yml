@@ -71,7 +71,10 @@ services:
       # Always use Docker internal DNS — never localhost
       DATABASE_URL:        postgresql://${DB_USER}:${DB_PASSWORD}@db:5432/${DB_NAME}
       REDIS_URL:           redis://redis:6379
-      GEMINI_API_KEY:      ${GEMINI_API_KEY}
+      GEMINI_API_KEY_1:    ${GEMINI_API_KEY_1:-}
+      GEMINI_API_KEY_2:    ${GEMINI_API_KEY_2:-}
+      GEMINI_API_KEY_3:    ${GEMINI_API_KEY_3:-}
+      GEMINI_API_KEY_4:    ${GEMINI_API_KEY_4:-}
       SERPAPI_KEY:         ${SERPAPI_KEY:-replace-me}
       INTERNAL_API_SECRET: ${INTERNAL_API_SECRET}
       # Propagate to Python logging
