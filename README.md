@@ -39,7 +39,7 @@ nginx (port 3000)  ──/api proxy──►  Spring Boot (port 8080)
 ### 1. Clone and configure
 
 ```powershell
-git clone https://github.com/your-username/truthstream.git
+git clone https://github.com/himanshusalve16/TruthStream-Multi-Agent-Fact-Checking-Pipeline
 cd truthstream
 
 # Create your environment file from the template
@@ -235,7 +235,3 @@ docker compose up
 ```
 
 ---
-
-## License
-
-Portfolio / educational use.
