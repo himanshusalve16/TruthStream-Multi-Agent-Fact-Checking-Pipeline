@@ -1,0 +1,12 @@
+# Exclude build outputs — Docker builds from source
+target/
+
+# Exclude local Maven cache
+.mvn/repository/
+
+# Exclude IDE files
+.idea/
+*.iml
+.settings/
+.classpath
+.project

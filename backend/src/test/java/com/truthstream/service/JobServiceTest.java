@@ -51,7 +51,7 @@ class JobServiceTest {
                 .updatedAt(OffsetDateTime.now())
                 .build();
 
-        when(jobRepository.findRecentCompleteByUserAndUrl(eq(userId), eq(request.getUrl()), any()))
+        when(jobRepository.findFirstByUserIdAndStatusAndInputUrlEqualsAndCreatedAtAfterOrderByCreatedAtDesc(eq(userId), eq("COMPLETE"), eq(request.getUrl()), any()))
                 .thenReturn(Optional.of(cached));
 
         JobResponse response = jobService.createJob(userId, request);

@@ -46,8 +46,9 @@ public class JobService {
 
         // Duplicate URL detection: same user, same URL, completed in last 24h
         if ("url".equals(request.getInputType()) && request.getUrl() != null) {
-            Optional<Job> cached = jobRepository.findRecentCompleteByUserAndUrl(
+            Optional<Job> cached = jobRepository.findFirstByUserIdAndStatusAndInputUrlAndCreatedAtAfter(
                     userId,
+                    "COMPLETE",
                     request.getUrl(),
                     OffsetDateTime.now().minusHours(24));
 

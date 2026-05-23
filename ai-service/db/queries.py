@@ -14,14 +14,14 @@ import json
 async def get_job(pool: asyncpg.Pool, job_id: str) -> Optional[asyncpg.Record]:
     async with pool.acquire() as conn:
         return await conn.fetchrow(
-            "SELECT * FROM jobs WHERE id = $1", job_id
+            "SELECT * FROM jobs WHERE id = $1::uuid", job_id
         )
 
 
 async def update_job_status(pool: asyncpg.Pool, job_id: str, status: str) -> None:
     async with pool.acquire() as conn:
         await conn.execute(
-            "UPDATE jobs SET status = $1, updated_at = NOW() WHERE id = $2",
+            "UPDATE jobs SET status = $1, updated_at = NOW() WHERE id = $2::uuid",
             status, job_id
         )
 
@@ -32,7 +32,7 @@ async def update_job_status_error(
     async with pool.acquire() as conn:
         await conn.execute(
             """UPDATE jobs SET status = $1, error_message = $2, updated_at = NOW()
-               WHERE id = $3""",
+               WHERE id = $3::uuid""",
             status, error_message, job_id
         )
 
@@ -40,7 +40,7 @@ async def update_job_status_error(
 async def update_job_article(pool: asyncpg.Pool, job_id: str, article_id: str) -> None:
     async with pool.acquire() as conn:
         await conn.execute(
-            "UPDATE jobs SET article_id = $1, updated_at = NOW() WHERE id = $2",
+            "UPDATE jobs SET article_id = $1::uuid, updated_at = NOW() WHERE id = $2::uuid",
             article_id, job_id
         )
 
@@ -84,7 +84,6 @@ async def insert_article(
 async def find_similar_claim(pool: asyncpg.Pool, embedding: List[float]) -> Optional[asyncpg.Record]:
     """Find a near-duplicate claim using cosine similarity (pgvector)."""
     async with pool.acquire() as conn:
-        # Register pgvector codec
         await conn.execute("SET LOCAL ivfflat.probes = 10")
         embedding_str = "[" + ",".join(str(x) for x in embedding) + "]"
         return await conn.fetchrow(
@@ -112,7 +111,7 @@ async def insert_claim(
             embedding_str = "[" + ",".join(str(x) for x in embedding) + "]"
         row = await conn.fetchrow(
             """INSERT INTO claims (job_id, article_id, text, context_quote, claim_type, checkability, embedding)
-               VALUES ($1, $2, $3, $4, $5, $6, $7::vector)
+               VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7::vector)
                RETURNING id""",
             job_id, article_id, text, context_quote, claim_type, checkability, embedding_str
         )
@@ -139,7 +138,7 @@ async def insert_source(
         row = await conn.fetchrow(
             """INSERT INTO sources (claim_id, url, title, domain, snippet, full_text,
                                     stance, quality_score, fetch_status)
-               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+               VALUES ($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9)
                RETURNING id""",
             claim_id, url, title, domain, snippet, full_text,
             stance, quality_score, fetch_status
@@ -163,7 +162,7 @@ async def insert_verdict(
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             """INSERT INTO verdicts (job_id, claim_id, verdict, confidence, reasoning, is_overall)
-               VALUES ($1,$2,$3,$4,$5,$6)
+               VALUES ($1::uuid,$2::uuid,$3,$4,$5,$6)
                RETURNING id""",
             job_id, claim_id, verdict, confidence, reasoning, is_overall
         )
@@ -185,13 +184,15 @@ async def insert_bias_result(
         summary: str,
 ) -> str:
     async with pool.acquire() as conn:
+        # Normalize framing_flags to plain dicts, then serialize for asyncpg JSONB
+        flags_list = [f if isinstance(f, dict) else f.model_dump() for f in framing_flags]
         row = await conn.fetchrow(
             """INSERT INTO bias_results (job_id, article_id, bias_score, bias_direction,
                                          framing_flags, loaded_terms, summary)
-               VALUES ($1,$2,$3,$4,$5,$6,$7)
+               VALUES ($1::uuid,$2::uuid,$3,$4,$5::jsonb,$6,$7)
                RETURNING id""",
             job_id, article_id, bias_score, bias_direction,
-            json.dumps([f if isinstance(f, dict) else f.model_dump() for f in framing_flags]),
+            json.dumps(flags_list),
             loaded_terms, summary
         )
         return str(row["id"])
@@ -211,6 +212,6 @@ async def insert_audit_log(
     async with pool.acquire() as conn:
         await conn.execute(
             """INSERT INTO audit_log (job_id, user_id, event_type, payload)
-               VALUES ($1, $2, $3, $4)""",
+               VALUES ($1::uuid, $2::uuid, $3, $4::jsonb)""",
             job_id, user_id, event_type, json.dumps(payload)
         )

@@ -42,7 +42,7 @@ services:
     ports:
       - "${FASTAPI_PORT}:8000"
     environment:
-      DATABASE_URL: postgresql://${DB_USER}:${DB_PASSWORD}@db:${DB_PORT}/${DB_NAME}
+      DATABASE_URL: postgresql://${DB_USER}:${DB_PASSWORD}@db:5432/${DB_NAME}
       REDIS_URL: redis://redis:6379
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       SERPAPI_KEY: ${SERPAPI_KEY:-replace-me}

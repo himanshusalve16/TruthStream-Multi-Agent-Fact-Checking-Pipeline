@@ -36,7 +36,10 @@ public class AuthController {
             AuthResponse response = authService.register(request);
             return ResponseEntity.status(HttpStatus.CREATED).body(Map.of(
                     "user_id", response.getUserId(),
-                    "email", response.getEmail()
+                    "email", response.getEmail(),
+                    "access_token", response.getAccessToken(),
+                    "token_type", response.getTokenType(),
+                    "expires_in", response.getExpiresIn()
             ));
         } catch (IllegalArgumentException e) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, e.getMessage());

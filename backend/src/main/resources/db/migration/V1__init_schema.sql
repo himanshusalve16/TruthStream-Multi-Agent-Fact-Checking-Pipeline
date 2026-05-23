@@ -1,6 +1,11 @@
 -- TruthStream Database Schema
 -- Managed by Flyway. Do not manually alter these tables.
 
+-- Ensure pgvector extension is available before creating vector columns
+CREATE EXTENSION IF NOT EXISTS vector;
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
 -- ============================================================
 -- Users
 -- ============================================================
