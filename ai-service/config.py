@@ -5,8 +5,8 @@ from functools import lru_cache
 class Settings(BaseSettings):
     database_url: str = "postgresql://postgres:postgres@localhost:5432/truthstream"
     redis_url: str = "redis://localhost:6379"
-    gemini_api_key: str = "AIzaSyCP9qjzDv7lxiA4dut82hmjzV1EKFE5x0Y"
-    serpapi_key: str = "3663bb332bcaf41f5807a86871b489c2ceead20ef0ff757806e32aa4279646b8"  # optional; DuckDuckGo used if unset or empty
+    gemini_api_key: str = "replace-me"
+    serpapi_key: str = "replace-me"  # optional; DuckDuckGo used if unset or empty
     internal_api_secret: str = "replace-me"
     test_mode: bool = False
 
