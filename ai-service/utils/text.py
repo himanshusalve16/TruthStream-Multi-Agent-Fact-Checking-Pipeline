@@ -68,14 +68,53 @@ def extract_domain(url: str) -> Optional[str]:
         return None
 
 
-def classify_article_complexity(text: str) -> str:
+def evaluate_article_complexity(text: str) -> dict:
+    """
+    Computes lightweight heuristics for article classification:
+    - word_count (int)
+    - html_noise (float)
+    - claim_density (float)
+    - entity_density (float)
+    - classification (str)
+    """
+    import re
     cleaned = text.strip()
-    if len(cleaned) < 100 or (len(cleaned) < 300 and " " not in cleaned):
-        return "broken/noisy"
-    wc = len(cleaned.split())
-    if wc < 600:
-        return "short/simple"
+    words = cleaned.split()
+    wc = len(words)
+    
+    # 1. HTML Noise Estimate (ratio of non-alphanumeric chars or long symbol strings)
+    non_alphanum = len([c for c in cleaned if not c.isalnum() and not c.isspace()])
+    noise_ratio = non_alphanum / max(1, len(cleaned))
+    
+    # 2. Claim Density Estimate (numbers, percentages, quotes, statistics)
+    numbers_count = len(re.findall(r'\b\d+\b', cleaned))
+    percent_count = len(re.findall(r'\d+%', cleaned))
+    quotes_count = len(re.findall(r'["\'"“”]', cleaned))
+    claim_density = (numbers_count + percent_count * 2 + quotes_count) / max(1, wc)
+    
+    # 3. Entity Density (capitalized words excluding start of string)
+    capitalized = len([w for w in words if w and w[0].isupper()])
+    entity_density = capitalized / max(1, wc)
+    
+    # Classification logic
+    if wc < 80 or (wc < 250 and noise_ratio > 0.40):
+        classification = "recovery"
+    elif wc < 600 and claim_density < 0.08:
+        classification = "fast"
     elif wc < 1800:
-        return "medium"
+        classification = "standard"
     else:
-        return "long/complex"
+        classification = "deep"
+        
+    return {
+        "word_count": wc,
+        "noise_ratio": noise_ratio,
+        "claim_density": claim_density,
+        "entity_density": entity_density,
+        "classification": classification
+    }
+
+
+def classify_article_complexity(text: str) -> str:
+    res = evaluate_article_complexity(text)
+    return res["classification"]
