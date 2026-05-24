@@ -21,7 +21,7 @@ Rules:
 - Extract ONLY checkable factual claims: statistics, named events, attributed statements, specific dates/numbers.
 - Do NOT extract: opinions, predictions, rhetorical questions, vague assertions.
 - Each claim must be self-contained and understandable without the surrounding article.
-- Maximum 10 claims per article. Prioritize the most specific and checkable ones.
+- Maximum 5 claims per article. Prioritize the most specific and checkable ones.
 - Label each claim with a type: "statistic", "event", "attribution", or "definition".
 - Rate checkability as "high" (specific, verifiable), "medium" (partially verifiable), or "low" (hard to verify).
 

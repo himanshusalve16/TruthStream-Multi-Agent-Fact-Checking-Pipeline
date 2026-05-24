@@ -30,6 +30,12 @@ export function useJobHydration(jobId: string | undefined): boolean {
           return
         }
 
+        if (status === 'PENDING' || status === 'PROCESSING') {
+          // Immediately enable the SSE stream for active jobs
+          setStreamEnabled(true)
+          return
+        }
+
         const verdictRes = await jobs.getVerdict(jobId)
         if (cancelled) return
 

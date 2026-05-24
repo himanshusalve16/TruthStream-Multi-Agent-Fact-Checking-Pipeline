@@ -18,8 +18,13 @@ public class VerdictController {
     private final JobResultService jobResultService;
     private final UserRepository userRepository;
 
-    private UUID getDevUserId() {
-        return userRepository.findByEmail("dev@truthstream.local")
+    private UUID cachedDevUserId = null;
+
+    private synchronized UUID getDevUserId() {
+        if (cachedDevUserId != null) {
+            return cachedDevUserId;
+        }
+        UUID id = userRepository.findByEmail("dev@truthstream.local")
                 .map(User::getId)
                 .orElseGet(() -> {
                     User u = new User();
@@ -27,6 +32,8 @@ public class VerdictController {
                     u.setPasswordHash("none");
                     return userRepository.save(u).getId();
                 });
+        cachedDevUserId = id;
+        return id;
     }
 
     @GetMapping("/{jobId}/verdict")

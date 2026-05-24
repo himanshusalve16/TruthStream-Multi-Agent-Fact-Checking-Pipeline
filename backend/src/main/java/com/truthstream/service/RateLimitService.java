@@ -22,7 +22,13 @@ public class RateLimitService {
     @Value("${app.rate-limit.max-auth-per-hour:20}")
     private int maxAuthPerHour;
 
+    @Value("${app.rate-limit.enabled:true}")
+    private boolean enabled;
+
     public void checkJobRateLimit(UUID userId) {
+        if (!enabled) {
+            return;
+        }
         String key = "ratelimit:jobs:" + userId;
         long count = readCount(key);
         if (count >= maxJobsPerHour) {
@@ -32,11 +38,14 @@ public class RateLimitService {
     }
 
     public void recordJobSubmission(UUID userId) {
+        if (!enabled) {
+            return;
+        }
         incrementWithExpiry("ratelimit:jobs:" + userId, 1, TimeUnit.HOURS);
     }
 
     public void checkAuthRateLimit(String clientIp) {
-        if (clientIp == null || clientIp.isBlank()) {
+        if (!enabled || clientIp == null || clientIp.isBlank()) {
             return;
         }
         String key = "ratelimit:auth:" + clientIp;
@@ -48,7 +57,7 @@ public class RateLimitService {
     }
 
     public void recordAuthAttempt(String clientIp) {
-        if (clientIp == null || clientIp.isBlank()) {
+        if (!enabled || clientIp == null || clientIp.isBlank()) {
             return;
         }
         incrementWithExpiry("ratelimit:auth:" + clientIp, 1, TimeUnit.HOURS);

@@ -2,7 +2,6 @@ import { useEffect, useState } from 'react'
 import { useParams, Link, useNavigate } from 'react-router-dom'
 import { 
   ArrowLeft, 
-  History, 
   Cpu, 
   Copy, 
   Check 
@@ -85,13 +84,7 @@ export default function JobPage() {
               <ArrowLeft size={13} />
               <span>New Check</span>
             </Link>
-            <Link 
-              to="/history" 
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-lg border border-border bg-white/3 hover:bg-white/6 hover:border-border-hover text-text-dim hover:text-white transition-all duration-200"
-            >
-              <History size={13} />
-              <span>History</span>
-            </Link>
+
           </div>
         </div>
       </header>

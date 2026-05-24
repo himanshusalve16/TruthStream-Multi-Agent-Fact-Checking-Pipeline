@@ -31,7 +31,7 @@ Output JSON only:
   ]
 }"""
 
-MAX_SOURCES = 5
+MAX_SOURCES = 3
 MAX_CONCURRENT_SCRAPES = 5
 
 

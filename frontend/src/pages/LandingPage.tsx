@@ -7,7 +7,6 @@ import {
   Globe, 
   Scale, 
   ShieldAlert, 
-  History, 
   TrendingUp, 
   Activity 
 } from 'lucide-react'
@@ -54,13 +53,6 @@ export default function LandingPage() {
             </span>
           </Link>
           <nav className="flex items-center gap-4">
-            <Link 
-              to="/history" 
-              className="flex items-center gap-2 px-4 h-10 text-sm font-semibold rounded-lg border border-border bg-white/3 hover:bg-white/6 hover:border-border-hover text-text-dim hover:text-white transition-all duration-200"
-            >
-              <History size={16} />
-              <span>Pipeline History</span>
-            </Link>
           </nav>
         </div>
       </header>

@@ -93,6 +93,7 @@ app:
   internal:
     api-secret: ${INTERNAL_API_SECRET}
   rate-limit:
+    enabled: ${RATE_LIMIT_ENABLED:false}
     max-jobs-per-hour: 10
     max-auth-per-hour: 20
 

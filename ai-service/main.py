@@ -188,7 +188,7 @@ async def job_worker(app: FastAPI):
                 _, job_id_bytes = result
                 job_id = job_id_bytes.decode()
                 logger.info("Worker picked up job: %s", job_id)
-                asyncio.create_task(process_job(job_id, redis, pool))
+                await process_job(job_id, redis, pool)
         except asyncio.CancelledError:
             logger.info("Worker cancelled")
             break
