@@ -66,3 +66,16 @@ def extract_domain(url: str) -> Optional[str]:
         return domain or None
     except Exception:
         return None
+
+
+def classify_article_complexity(text: str) -> str:
+    cleaned = text.strip()
+    if len(cleaned) < 100 or (len(cleaned) < 300 and " " not in cleaned):
+        return "broken/noisy"
+    wc = len(cleaned.split())
+    if wc < 600:
+        return "short/simple"
+    elif wc < 1800:
+        return "medium"
+    else:
+        return "long/complex"

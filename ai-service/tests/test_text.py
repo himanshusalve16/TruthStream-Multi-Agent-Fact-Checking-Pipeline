@@ -1,5 +1,8 @@
 """Unit tests for text utilities."""
-from utils.text import clean_text, truncate_text, sanitize_for_llm, md5_hash
+from utils.text import (
+    clean_text, truncate_text, sanitize_for_llm, md5_hash,
+    classify_article_complexity
+)
 
 
 def test_clean_text_collapses_whitespace():
@@ -22,3 +25,18 @@ def test_sanitize_strips_injection():
 
 def test_md5_hash_stable():
     assert md5_hash("https://example.com/a") == md5_hash("https://example.com/a")
+
+
+def test_classify_article_complexity():
+    assert classify_article_complexity("hello") == "broken/noisy"
+    # less than 100 chars
+    assert classify_article_complexity("word word word word word") == "broken/noisy"
+    
+    short_text = " ".join(["word"] * 150) + " " + "x" * 150
+    assert classify_article_complexity(short_text) == "short/simple"
+    
+    medium_text = " ".join(["word"] * 800)
+    assert classify_article_complexity(medium_text) == "medium"
+    
+    long_text = " ".join(["word"] * 2000)
+    assert classify_article_complexity(long_text) == "long/complex"

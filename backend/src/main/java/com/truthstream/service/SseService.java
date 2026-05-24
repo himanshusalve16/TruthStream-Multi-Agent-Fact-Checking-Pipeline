@@ -69,6 +69,19 @@ public class SseService {
         listeners.put(jobId, listener);
         listenerContainer.addMessageListener(listener, new PatternTopic(channel));
 
+        // Immediately send 'queued' status event so the client knows it's connected
+        try {
+            java.util.Map<String, Object> initialEvent = java.util.Map.of(
+                "stage", "queued",
+                "message", "Job registered at orchestrator gateway..."
+            );
+            emitter.send(SseEmitter.event()
+                    .name("status")
+                    .data(objectMapper.writeValueAsString(initialEvent)));
+        } catch (Exception e) {
+            log.warn("Failed to send initial status to emitter for job {}: {}", jobId, e.getMessage());
+        }
+
         log.info("SSE registered for job {} on channel {}", jobId, channel);
         return emitter;
     }
