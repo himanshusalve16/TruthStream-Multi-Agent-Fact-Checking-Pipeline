@@ -31,7 +31,7 @@ export default function InputForm() {
       navigate(`/jobs/${jobId}`)
     } catch (err: any) {
       console.error('Submission error:', err);
-      if (err.message && err.message.includes('Backend API URL is not configured correctly')) {
+      if (err.message && (err.message.includes('Backend API URL') || err.message.includes('Invalid backend API base URL'))) {
         setError(err.message);
       } else if (err.response) {
         const status = err.response.status;

@@ -11,8 +11,8 @@ const client = axios.create({
 
 // Request diagnostic logger & Fail-fast check
 client.interceptors.request.use((config) => {
-  if (!API_BASE) {
-    const errorMsg = "Backend API URL is not configured correctly. VITE_API_BASE_URL is missing.";
+  if (!API_BASE || !API_BASE.startsWith('http')) {
+    const errorMsg = "Invalid backend API base URL configured. VITE_API_BASE_URL is missing or invalid.";
     console.error(`[TruthStream API Error] ${errorMsg}`);
     throw new Error(errorMsg);
   }

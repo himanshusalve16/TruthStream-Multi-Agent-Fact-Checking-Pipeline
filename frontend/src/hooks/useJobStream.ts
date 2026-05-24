@@ -8,7 +8,9 @@ export function useJobStream(jobId: string | null) {
   useEffect(() => {
     if (!jobId) return
 
-    const url = `/api/jobs/${jobId}/stream`
+    const apiBase = import.meta.env.VITE_API_BASE_URL || '';
+    const cleanBase = apiBase.endsWith('/') ? apiBase.slice(0, -1) : apiBase;
+    const url = `${cleanBase}/api/jobs/${jobId}/stream`;
 
     const es = new EventSource(url)
     esRef.current = es
