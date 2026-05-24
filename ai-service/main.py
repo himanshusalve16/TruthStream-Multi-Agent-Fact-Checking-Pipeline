@@ -211,6 +211,8 @@ async def job_worker(app: FastAPI):
                 _, job_id_bytes = result
                 job_id = job_id_bytes.decode()
                 logger.info("Worker picked up job: %s", job_id)
+                await publish_status(redis, job_id, "accepted", "Job accepted by worker thread...")
+                await publish_status(redis, job_id, "spawning_agents", "Spawning fact-checking agents...")
                 await process_job(job_id, redis, pool)
         except asyncio.CancelledError:
             logger.info("Worker cancelled")
@@ -622,6 +624,18 @@ async def _process_job_inner(job_id: str, redis: aioredis.Redis, pool) -> None:
     
     wc = word_count(cleaned)
     complexity = classify_article_complexity(cleaned)
+
+    # Explicit queueing budget check: if queue_time > 15s, downgrade to Fast-Path lightweight processing
+    if queue_time > 15.0:
+        logger.warning("Job %s queue time (%.3fs) exceeded budget (15.0s). Forcing Fast-Path mode.", job_id, queue_time)
+        await publish_status(redis, job_id, "spawning_agents", "⚠️ System load high: Switching to lightweight fast-track verification mode...")
+        complexity = "short/simple"
+        words = cleaned.split()
+        if len(words) > 600:
+            cleaned = " ".join(words[:600])
+            wc = word_count(cleaned)
+            logger.info("Force-truncated text to 600 words for Fast-Path processing.")
+
     logger.info("Job %s text length: %d words, Complexity: %s", job_id, wc, complexity)
 
     if complexity == "broken/noisy":

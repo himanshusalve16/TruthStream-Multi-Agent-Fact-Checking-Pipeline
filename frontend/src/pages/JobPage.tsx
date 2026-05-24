@@ -26,7 +26,7 @@ export default function JobPage() {
   useEffect(() => {
     if (id && state.jobId !== id) {
       dispatch({ type: 'SET_JOB_ID', jobId: id })
-      dispatch({ type: 'SET_STAGE', stage: 'fetching_article', message: 'Connecting to pipeline...' })
+      dispatch({ type: 'SET_STAGE', stage: 'queued', message: 'Connecting to pipeline...' })
     }
   }, [id])
 
@@ -51,7 +51,11 @@ export default function JobPage() {
     if (isError) return 'Failed'
     if (isComplete) return 'Complete'
     switch(state.stage) {
+      case 'queued': return 'Queued'
+      case 'accepted': return 'Accepted'
+      case 'spawning_agents': return 'Spawning Agents'
       case 'fetching_article': return 'Fetching Article'
+      case 'extracting_content': return 'Extracting Content'
       case 'extracting_claims': return 'Extracting Claims'
       case 'sourcing_claims': return 'Sourcing Evidence'
       case 'judging': return 'Judging Veracity'

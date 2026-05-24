@@ -52,6 +52,8 @@ export interface VerdictData {
 export type Stage =
   | 'idle'
   | 'queued'
+  | 'accepted'
+  | 'spawning_agents'
   | 'fetching_article'
   | 'extracting_content'
   | 'extracting_claims'

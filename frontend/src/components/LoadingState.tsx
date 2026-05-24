@@ -19,7 +19,7 @@ const STAGES: { key: Stage; label: string; icon: React.ReactNode; color: string;
 ]
 
 const STAGE_ORDER: Stage[] = [
-  'queued', 'fetching_article', 'extracting_content', 'extracting_claims', 'sourcing_claims', 'judging', 'finalizing', 'complete'
+  'queued', 'accepted', 'spawning_agents', 'fetching_article', 'extracting_content', 'extracting_claims', 'sourcing_claims', 'judging', 'finalizing', 'complete'
 ]
 
 const SUBSTAGE_LOGS: Record<Stage, string[]> = {
@@ -27,6 +27,16 @@ const SUBSTAGE_LOGS: Record<Stage, string[]> = {
     'Job registered at orchestrator gateway...',
     'Assigning pipeline thread worker...',
     'Thread initialized. Queue cleared.'
+  ],
+  accepted: [
+    'Job accepted by background worker thread...',
+    'Establishing secure execution context...',
+    'Worker resources ready.'
+  ],
+  spawning_agents: [
+    'Spawning fact-checking agent pool...',
+    'Pre-warming Google Gemini API models...',
+    'Agents spawned successfully.'
   ],
   fetching_article: [
     'Connecting to target web host...',
