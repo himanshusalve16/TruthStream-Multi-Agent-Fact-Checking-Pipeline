@@ -29,8 +29,23 @@ export default function InputForm() {
       dispatch({ type: 'SET_JOB_ID', jobId })
       navigate(`/jobs/${jobId}`)
     } catch (err: any) {
-      const msg = err?.response?.data?.message || err?.message || 'Submission failed'
-      setError(msg)
+      console.error('Submission error:', err);
+      if (err.response) {
+        const status = err.response.status;
+        const msg = err.response.data?.message || err.response.data?.error || err.message;
+        const endpoint = err.config?.url;
+        if (status === 404) {
+          setError(`404 Not Found: Backend route missing at ${endpoint}. Check VITE_API_BASE_URL mapping.`);
+        } else if (status >= 500) {
+          setError(`500 Backend Error: ${msg} at ${endpoint}`);
+        } else {
+          setError(`API Error (${status}): ${msg}`);
+        }
+      } else if (err.request) {
+        setError('Network Error or CORS failure. Backend is unreachable.');
+      } else {
+        setError(`Error: ${err.message}`);
+      }
     } finally {
       setLoading(false)
     }
