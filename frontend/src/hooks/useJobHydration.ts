@@ -13,8 +13,6 @@ export function useJobHydration(jobId: string | undefined): boolean {
 
   useEffect(() => {
     if (!jobId) return
-    if (!localStorage.getItem('access_token')) return
-
     let cancelled = false
 
     const load = async () => {

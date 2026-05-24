@@ -1,3 +1,6 @@
+import { motion } from 'framer-motion'
+import type { Variants } from 'framer-motion'
+import { CheckSquare } from 'lucide-react'
 import type { Claim, ClaimVerdict, Source } from '../context/JobContext'
 import ClaimCard from './ClaimCard'
 
@@ -12,38 +15,50 @@ export default function ClaimList({ claims, claimVerdicts, sourcesByClaim }: Pro
 
   if (claims.length === 0) return null
 
-  return (
-    <section id="claims-section">
-      <h2 style={{
-        fontSize: '1.1rem',
-        fontWeight: 700,
-        color: 'var(--color-text)',
-        marginBottom: '16px',
-        display: 'flex',
-        alignItems: 'center',
-        gap: '8px',
-      }}>
-        🔍 Extracted Claims
-        <span style={{
-          background: 'var(--color-accent)',
-          color: '#fff',
-          borderRadius: '999px',
-          padding: '2px 10px',
-          fontSize: '0.78rem',
-          fontWeight: 700,
-        }}>
-          {claims.length}
-        </span>
-      </h2>
+  // Framer Motion Stagger Config
+  const containerVariants: Variants = {
+    hidden: { opacity: 0 },
+    show: {
+      opacity: 1,
+      transition: {
+        staggerChildren: 0.12,
+      }
+    }
+  }
 
-      {claims.map((claim) => (
-        <ClaimCard
-          key={claim.claim_id}
-          claim={claim}
-          verdict={verdictMap[claim.claim_id]}
-          sources={sourcesByClaim[claim.claim_id] || []}
-        />
-      ))}
+  const cardItemVariants: Variants = {
+    hidden: { opacity: 0, y: 15 },
+    show: { 
+      opacity: 1, 
+      y: 0, 
+      transition: { type: "spring", stiffness: 100, damping: 15 } 
+    }
+  }
+
+  return (
+    <section id="claims-section" className="text-left">
+      <div className="flex items-center justify-between mb-4">
+        <h3 className="text-xs font-bold text-text-dim uppercase tracking-wider flex items-center gap-1.5">
+          <CheckSquare size={13} className="text-accent" /> isolated claims ({claims.length})
+        </h3>
+      </div>
+
+      <motion.div
+        variants={containerVariants}
+        initial="hidden"
+        animate="show"
+        className="flex flex-col gap-4"
+      >
+        {claims.map((claim) => (
+          <motion.div key={claim.claim_id} variants={cardItemVariants}>
+            <ClaimCard
+              claim={claim}
+              verdict={verdictMap[claim.claim_id]}
+              sources={sourcesByClaim[claim.claim_id] || []}
+            />
+          </motion.div>
+        ))}
+      </motion.div>
     </section>
   )
 }

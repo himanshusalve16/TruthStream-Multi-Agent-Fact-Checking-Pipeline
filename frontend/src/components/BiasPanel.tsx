@@ -1,4 +1,6 @@
 import { useState } from 'react'
+import { motion, AnimatePresence } from 'framer-motion'
+import { Target, Compass, ChevronDown } from 'lucide-react'
 import type { BiasData } from '../context/JobContext'
 
 interface Props {
@@ -10,107 +12,157 @@ const DIRECTION_LABELS: Record<string, string> = {
   right_leaning: 'Right Leaning',
   pro_establishment: 'Pro-Establishment',
   anti_establishment: 'Anti-Establishment',
-  neutral: 'Neutral',
+  neutral: 'Neutral Bias',
 }
 
-const SEVERITY_COLORS: Record<string, string> = {
-  low: 'var(--color-success)',
-  medium: 'var(--color-warning)',
-  high: 'var(--color-danger)',
+const SEVERITY_THEMES: Record<string, { border: string; text: string; bg: string }> = {
+  low: {
+    border: 'border-emerald-500/20 border-l-emerald-500',
+    text: 'text-emerald-400',
+    bg: 'bg-emerald-500/5',
+  },
+  medium: {
+    border: 'border-amber-500/20 border-l-amber-500',
+    text: 'text-amber-400',
+    bg: 'bg-amber-500/5',
+  },
+  high: {
+    border: 'border-rose-500/20 border-l-rose-500',
+    text: 'text-rose-400',
+    bg: 'bg-rose-500/5',
+  },
 }
 
 function getBiasColor(score: number): string {
-  if (score < 30) return 'var(--color-success)'
-  if (score < 60) return 'var(--color-warning)'
-  return 'var(--color-danger)'
+  if (score < 30) return '#10b981' // Green
+  if (score < 60) return '#f59e0b' // Amber
+  return '#ef4444' // Rose
 }
 
 export default function BiasPanel({ bias }: Props) {
   const [expanded, setExpanded] = useState(false)
-  const color = getBiasColor(bias.bias_score)
+  const biasColor = getBiasColor(bias.bias_score)
 
   return (
-    <section id="bias-panel" className="glass-card fade-in" style={{ padding: '20px 24px' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '16px' }}>
-        <h2 style={{ fontSize: '1rem', fontWeight: 700 }}>🎯 Bias Analysis</h2>
-        <div style={{ textAlign: 'right' }}>
-          <span style={{ fontSize: '1.8rem', fontWeight: 800, color, fontFamily: 'var(--font-mono)' }}>
+    <section 
+      id="bias-panel" 
+      className="glass-card p-6 bg-bg-glass backdrop-blur-xl border border-border rounded-2xl shadow-card text-left"
+    >
+      {/* Title & Score Header */}
+      <div className="flex justify-between items-start mb-4">
+        <h3 className="text-xs font-bold text-text-dim uppercase tracking-wider flex items-center gap-1.5">
+          <Target size={13} className="text-accent" /> Bias Assessment
+        </h3>
+        <div className="text-right">
+          <span 
+            className="text-2xl font-black font-mono leading-none"
+            style={{ color: biasColor }}
+          >
             {bias.bias_score}
           </span>
-          <span style={{ color: 'var(--color-muted)', fontSize: '0.8rem' }}>/100</span>
+          <span className="text-[10px] text-text-muted font-bold">/100</span>
         </div>
       </div>
 
-      {/* Bias bar */}
-      <div className="confidence-bar-track" style={{ marginBottom: '12px', height: '8px' }}>
-        <div
-          className="confidence-bar-fill"
-          style={{ width: `${bias.bias_score}%`, background: color }}
+      {/* Horizontal Bias Scale Bar */}
+      <div className="confidence-bar-track h-2 bg-slate-900 rounded-full mb-4">
+        <motion.div
+          className="confidence-bar-fill h-full rounded-full"
+          initial={{ width: 0 }}
+          animate={{ width: `${bias.bias_score}%` }}
+          transition={{ duration: 0.6, ease: "easeOut" }}
+          style={{ background: biasColor }}
         />
       </div>
 
-      <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '12px' }}>
-        <span className="badge" style={{ background: 'rgba(255,255,255,.05)', color: 'var(--color-text-dim)' }}>
-          {DIRECTION_LABELS[bias.bias_direction] || bias.bias_direction}
+      {/* Bias Direction Capsule */}
+      <div className="flex flex-wrap gap-2 mb-4">
+        <span className="premium-tag tag-info text-[9px] flex items-center gap-1">
+          <Compass size={11} />
+          <span>{DIRECTION_LABELS[bias.bias_direction] || bias.bias_direction}</span>
         </span>
-        {bias.loaded_terms.slice(0, 5).map((t) => (
-          <span key={t} className="badge" style={{ background: 'rgba(239,68,68,.1)', color: 'var(--color-danger)', fontFamily: 'var(--font-mono)' }}>
-            "{t}"
-          </span>
-        ))}
       </div>
 
-      <p style={{ fontSize: '0.85rem', color: 'var(--color-text-dim)', lineHeight: 1.6 }}>
+      {/* Summary Narrative */}
+      <p className="text-xs sm:text-sm text-text-dim leading-relaxed mb-4 bg-slate-950/40 p-3.5 rounded-xl border border-white/[0.01]">
         {bias.summary}
       </p>
 
-      {bias.framing_flags.length > 0 && (
-        <>
+      {/* Loaded language terms pills */}
+      {bias.loaded_terms && bias.loaded_terms.length > 0 && (
+        <div className="mb-4">
+          <span className="text-[10px] text-text-muted font-bold tracking-wider block mb-2">LOADED LANGUAGE</span>
+          <div className="flex flex-wrap gap-1.5">
+            {bias.loaded_terms.slice(0, 6).map((t) => (
+              <span 
+                key={t} 
+                className="px-2 py-0.5 rounded bg-rose-500/5 text-rose-400 border border-rose-500/10 font-mono text-[10px] font-bold"
+              >
+                "{t}"
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Framing Flags collapsible block */}
+      {bias.framing_flags && bias.framing_flags.length > 0 && (
+        <div className="pt-3 border-t border-border/40">
           <button
-            className="btn btn-secondary"
-            style={{ fontSize: '0.78rem', padding: '5px 12px', marginTop: '12px' }}
+            className="flex items-center gap-1.5 text-xs font-bold text-accent hover:text-indigo-400 cursor-pointer transition-colors duration-200"
             onClick={() => setExpanded(!expanded)}
           >
-            {expanded ? '▲ Hide flags' : `▼ ${bias.framing_flags.length} framing flags`}
+            <span>
+              {expanded ? 'Hide framing details' : `Show framing details (${bias.framing_flags.length})`}
+            </span>
+            <motion.div
+              animate={{ rotate: expanded ? 180 : 0 }}
+              transition={{ duration: 0.2 }}
+            >
+              <ChevronDown size={14} />
+            </motion.div>
           </button>
 
-          {expanded && (
-            <div style={{ marginTop: '12px' }} className="fade-in">
-              {bias.framing_flags.map((flag, i) => (
-                <div
-                  key={i}
-                  style={{
-                    padding: '10px 12px',
-                    background: 'rgba(255,255,255,.03)',
-                    borderRadius: '8px',
-                    marginBottom: '8px',
-                    borderLeft: `3px solid ${SEVERITY_COLORS[flag.severity || 'low']}`,
-                  }}
-                >
-                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
-                    <span style={{ fontSize: '0.82rem', fontWeight: 600 }}>{flag.type}</span>
-                    <span style={{
-                      fontSize: '0.72rem',
-                      color: SEVERITY_COLORS[flag.severity || 'low'],
-                      textTransform: 'uppercase',
-                      fontWeight: 600,
-                    }}>
-                      {flag.severity}
-                    </span>
-                  </div>
-                  {flag.description && (
-                    <p style={{ fontSize: '0.8rem', color: 'var(--color-text-dim)' }}>{flag.description}</p>
-                  )}
-                  {flag.examples && flag.examples.length > 0 && (
-                    <p style={{ fontSize: '0.76rem', color: 'var(--color-muted)', marginTop: '4px', fontStyle: 'italic' }}>
-                      e.g. "{flag.examples.join('", "')}"
-                    </p>
-                  )}
+          {/* Smooth accordion with Framer Motion */}
+          <AnimatePresence>
+            {expanded && (
+              <motion.div
+                initial={{ height: 0, opacity: 0 }}
+                animate={{ height: "auto", opacity: 1 }}
+                exit={{ height: 0, opacity: 0 }}
+                transition={{ duration: 0.25, ease: "easeInOut" }}
+                className="overflow-hidden"
+              >
+                <div className="pt-3 flex flex-col gap-2">
+                  {bias.framing_flags.map((flag, i) => {
+                    const theme = SEVERITY_THEMES[flag.severity || 'low'] || SEVERITY_THEMES.low
+                    return (
+                      <div
+                        key={i}
+                        className={`p-3 border rounded-lg border-l-4 ${theme.border} ${theme.bg} text-left`}
+                      >
+                        <div className="flex justify-between items-center mb-1">
+                          <span className="text-xs font-bold text-white">{flag.type}</span>
+                          <span className={`text-[9px] font-extrabold uppercase tracking-wide ${theme.text}`}>
+                            {flag.severity}
+                          </span>
+                        </div>
+                        {flag.description && (
+                          <p className="text-xs text-text-dim leading-relaxed">{flag.description}</p>
+                        )}
+                        {flag.examples && flag.examples.length > 0 && (
+                          <p className="text-[10px] text-text-muted mt-1.5 italic">
+                            e.g. "{flag.examples.join('", "')}"
+                          </p>
+                        )}
+                      </div>
+                    )
+                  })}
                 </div>
-              ))}
-            </div>
-          )}
-        </>
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
       )}
     </section>
   )

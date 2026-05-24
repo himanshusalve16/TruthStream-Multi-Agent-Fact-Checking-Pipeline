@@ -5,6 +5,22 @@ const client = axios.create({
   headers: { 'Content-Type': 'application/json' },
 })
 
+// Request diagnostic logger
+client.interceptors.request.use((config) => {
+  let absoluteUrl = config.url || '';
+  if (config.baseURL && !absoluteUrl.startsWith('http://') && !absoluteUrl.startsWith('https://')) {
+    const base = config.baseURL.endsWith('/') ? config.baseURL.slice(0, -1) : config.baseURL;
+    const path = absoluteUrl.startsWith('/') ? absoluteUrl : `/${absoluteUrl}`;
+    absoluteUrl = `${base}${path}`;
+  } else if (!absoluteUrl.startsWith('http://') && !absoluteUrl.startsWith('https://')) {
+    absoluteUrl = `${window.location.origin}${absoluteUrl.startsWith('/') ? absoluteUrl : `/${absoluteUrl}`}`;
+  }
+  console.log(`[TruthStream API Diagnostic] requesting ${config.method?.toUpperCase()} -> ${absoluteUrl}`);
+  return config;
+}, (error) => {
+  return Promise.reject(error);
+})
+
 export default client
 
 // ── API helpers ────────────────────────────────────────────────
