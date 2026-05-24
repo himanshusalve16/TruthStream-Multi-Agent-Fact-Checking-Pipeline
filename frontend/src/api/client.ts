@@ -1,19 +1,28 @@
 import axios from 'axios'
 
+const API_BASE = import.meta.env.VITE_API_BASE_URL;
+
+console.log(`[TruthStream Startup] Resolved VITE_API_BASE_URL: "${API_BASE || 'NOT_CONFIGURED'}"`);
+
 const client = axios.create({
-  baseURL: import.meta.env.VITE_API_BASE_URL || '',
+  baseURL: API_BASE || '',
   headers: { 'Content-Type': 'application/json' },
 })
 
-// Request diagnostic logger
+// Request diagnostic logger & Fail-fast check
 client.interceptors.request.use((config) => {
+  if (!API_BASE) {
+    const errorMsg = "Backend API URL is not configured correctly. VITE_API_BASE_URL is missing.";
+    console.error(`[TruthStream API Error] ${errorMsg}`);
+    throw new Error(errorMsg);
+  }
+
   let absoluteUrl = config.url || '';
-  if (config.baseURL && !absoluteUrl.startsWith('http://') && !absoluteUrl.startsWith('https://')) {
-    const base = config.baseURL.endsWith('/') ? config.baseURL.slice(0, -1) : config.baseURL;
+  if (!absoluteUrl.startsWith('http://') && !absoluteUrl.startsWith('https://')) {
+    const baseVal = config.baseURL || API_BASE || '';
+    const base = baseVal.endsWith('/') ? baseVal.slice(0, -1) : baseVal;
     const path = absoluteUrl.startsWith('/') ? absoluteUrl : `/${absoluteUrl}`;
     absoluteUrl = `${base}${path}`;
-  } else if (!absoluteUrl.startsWith('http://') && !absoluteUrl.startsWith('https://')) {
-    absoluteUrl = `${window.location.origin}${absoluteUrl.startsWith('/') ? absoluteUrl : `/${absoluteUrl}`}`;
   }
   console.log(`[TruthStream API Diagnostic] requesting ${config.method?.toUpperCase()} -> ${absoluteUrl}`);
   return config;

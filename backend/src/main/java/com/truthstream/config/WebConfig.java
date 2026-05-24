@@ -14,7 +14,12 @@ public class WebConfig {
             @Override
             public void addCorsMappings(CorsRegistry registry) {
                 registry.addMapping("/**")
-                        .allowedOriginPatterns("http://localhost:3000", "https://*.vercel.app", "https://*.onrender.com")
+                        .allowedOriginPatterns(
+                                "http://localhost:3000",
+                                "https://truth-stream-multi-agent-fact-check.vercel.app",
+                                "https://*.vercel.app",
+                                "https://*.onrender.com"
+                        )
                         .allowedMethods("GET", "POST", "PUT", "DELETE", "OPTIONS")
                         .allowedHeaders("*")
                         .allowCredentials(true)

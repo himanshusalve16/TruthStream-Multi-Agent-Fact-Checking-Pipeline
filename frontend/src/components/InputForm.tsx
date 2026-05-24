@@ -31,28 +31,38 @@ export default function InputForm() {
       navigate(`/jobs/${jobId}`)
     } catch (err: any) {
       console.error('Submission error:', err);
-      if (err.response) {
+      if (err.message && err.message.includes('Backend API URL is not configured correctly')) {
+        setError(err.message);
+      } else if (err.response) {
         const status = err.response.status;
         const msg = err.response.data?.message || err.response.data?.error || err.message;
         const endpoint = err.config?.url;
+        
+        let absoluteUrl = endpoint || '';
+        const baseUrl = import.meta.env.VITE_API_BASE_URL || '';
+        if (baseUrl && !absoluteUrl.startsWith('http')) {
+          const base = baseUrl.endsWith('/') ? baseUrl.slice(0, -1) : baseUrl;
+          const path = absoluteUrl.startsWith('/') ? absoluteUrl : `/${absoluteUrl}`;
+          absoluteUrl = `${base}${path}`;
+        }
+
         if (status === 404) {
-          let absoluteUrl = endpoint || '';
-          const baseUrl = import.meta.env.VITE_API_BASE_URL || '';
-          if (baseUrl && !absoluteUrl.startsWith('http')) {
-            const base = baseUrl.endsWith('/') ? baseUrl.slice(0, -1) : baseUrl;
-            const path = absoluteUrl.startsWith('/') ? absoluteUrl : `/${absoluteUrl}`;
-            absoluteUrl = `${base}${path}`;
-          } else if (!absoluteUrl.startsWith('http')) {
-            absoluteUrl = `${window.location.origin}${absoluteUrl.startsWith('/') ? absoluteUrl : `/${absoluteUrl}`}`;
-          }
-          setError(`Backend endpoint not found. Check API base URL and route path. Failed to connect to: ${absoluteUrl}`);
+          setError(`Backend API URL is not configured correctly. Failed to resolve endpoint at: ${absoluteUrl} (Status: 404).`);
         } else if (status >= 500) {
-          setError(`500 Backend Error: ${msg} at ${endpoint}`);
+          setError(`500 Backend Error: ${msg} at ${absoluteUrl}`);
         } else {
-          setError(`API Error (${status}): ${msg}`);
+          setError(`API Error (${status}): ${msg} at ${absoluteUrl}`);
         }
       } else if (err.request) {
-        setError('Network Error or CORS failure. Backend is unreachable.');
+        const endpoint = err.config?.url || '';
+        let absoluteUrl = endpoint;
+        const baseUrl = import.meta.env.VITE_API_BASE_URL || '';
+        if (baseUrl && !absoluteUrl.startsWith('http')) {
+          const base = baseUrl.endsWith('/') ? baseUrl.slice(0, -1) : baseUrl;
+          const path = absoluteUrl.startsWith('/') ? absoluteUrl : `/${absoluteUrl}`;
+          absoluteUrl = `${base}${path}`;
+        }
+        setError(`Backend API URL is not configured correctly or is unreachable. Failed to connect to: ${absoluteUrl || 'N/A'}`);
       } else {
         setError(`Error: ${err.message}`);
       }
