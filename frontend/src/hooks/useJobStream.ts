@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { useJobContext } from '../context/JobContext'
+import { API_BASE } from '../api/client'
 
 export function useJobStream(jobId: string | null) {
   const { dispatch } = useJobContext()
@@ -8,8 +9,7 @@ export function useJobStream(jobId: string | null) {
   useEffect(() => {
     if (!jobId) return
 
-    const apiBase = import.meta.env.VITE_API_BASE_URL || '';
-    const cleanBase = apiBase.endsWith('/') ? apiBase.slice(0, -1) : apiBase;
+    const cleanBase = API_BASE.endsWith('/') ? API_BASE.slice(0, -1) : API_BASE;
     const url = `${cleanBase}/api/jobs/${jobId}/stream`;
 
     const es = new EventSource(url)
