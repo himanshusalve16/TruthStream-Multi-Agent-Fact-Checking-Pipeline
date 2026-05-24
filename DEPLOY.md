@@ -6,11 +6,11 @@
 
 | Service | Platform | Notes |
 |---------|----------|-------|
-| Frontend | [Vercel](https://vercel.com) | Root: `frontend/` |
-| Backend | [Railway](https://railway.app) | `backend/Dockerfile` |
-| AI Service | Railway | `ai-service/Dockerfile` |
-| PostgreSQL | Railway plugin | Enable pgvector: run `infra/postgres/init.sql` once |
-| Redis | Railway plugin | |
+| Frontend | [Vercel](https://vercel.com) / [Render](https://render.com) | Root: `frontend/` |
+| Backend | [Railway](https://railway.app) / Render | `backend/Dockerfile` |
+| AI Service | Railway / Render | `ai-service/Dockerfile` |
+| PostgreSQL | Railway / Render | Enable pgvector: run `infra/postgres/init.sql` once |
+| Redis | Railway / Render | |
 
 ## 1. Railway — Database & Redis
 
@@ -57,6 +57,45 @@ CREATE EXTENSION IF NOT EXISTS pgcrypto;
 | `INTERNAL_API_SECRET` | same as AI service |
 
 3. Generate domain for HTTPS.
+
+## 4. Render Deployment (Alternative to Railway)
+
+### 4.1 Render — Database & Redis
+1. Create a **PostgreSQL** database on Render. Once provisioned, connect via external tool (e.g., pgAdmin or psql) and run:
+   ```sql
+   CREATE EXTENSION IF NOT EXISTS vector;
+   CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+   CREATE EXTENSION IF NOT EXISTS pgcrypto;
+   ```
+2. Create a **Redis** instance on Render.
+
+### 4.2 Render — AI Service (Private or Web Service)
+1. Create a **Web Service** (or Private Service if backend is in same region).
+2. Connect GitHub repo, set **Root Directory** to `ai-service`.
+3. Set Environment to **Docker**.
+4. Environment Variables:
+   - `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD` (use internal PostgreSQL credentials from Render)
+   - `REDIS_HOST`, `REDIS_PORT` (use internal Redis credentials from Render)
+   - `GEMINI_API_KEY_1`, `GEMINI_API_KEY_2`, etc.
+   - `INTERNAL_API_SECRET`: random 32+ char string
+
+### 4.3 Render — Backend (Web Service)
+1. Create a **Web Service**, set **Root Directory** to `backend`.
+2. Set Environment to **Docker**.
+3. Environment Variables:
+   - `SPRING_DATASOURCE_URL`: `jdbc:postgresql://<RENDER_INTERNAL_DB_HOST>:<PORT>/<DB_NAME>`
+   - `SPRING_DATASOURCE_USERNAME`, `SPRING_DATASOURCE_PASSWORD`
+   - `SPRING_DATA_REDIS_HOST`, `SPRING_DATA_REDIS_PORT`
+   - `FASTAPI_BASE_URL`: AI service internal URL (if Private Service) or public URL
+   - `INTERNAL_API_SECRET`: same as AI service
+   - `JWT_SECRET`: 64-hex char string
+
+### 4.4 Render — Frontend (Static Site)
+1. Create a **Static Site**, set **Root Directory** to `frontend`.
+2. Build Command: `npm run build`
+3. Publish Directory: `dist`
+4. Environment Variables:
+   - `VITE_API_BASE_URL`: The public URL of your Render Backend service.
 
 ## 4. Vercel — Frontend
 

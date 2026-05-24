@@ -33,7 +33,7 @@ USER spring:spring
 # Copy only the fat jar from the build stage
 COPY --from=build /app/target/*.jar app.jar
 
-EXPOSE 8080
+# EXPOSE removed to allow Render to dynamically assign port via PORT env var
 
 # -XX:+UseContainerSupport  → JVM respects Docker memory limits
 # -XX:MaxRAMPercentage=75.0 → Use up to 75% of container RAM for heap

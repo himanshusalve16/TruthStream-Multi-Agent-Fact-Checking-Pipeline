@@ -38,7 +38,6 @@ spring:
     show-sql: false
     properties:
       hibernate:
-        dialect: org.hibernate.dialect.PostgreSQLDialect
         format_sql: false
 
   flyway:
@@ -78,7 +77,7 @@ spring:
       max-file-size:    1MB
 
 server:
-  port: ${SPRING_PORT:8080}
+  port: ${PORT:8080}
   compression:
     enabled: true
 
