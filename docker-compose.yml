@@ -69,12 +69,18 @@ services:
       - "${FASTAPI_PORT:-8000}:8000"
     environment:
       # Always use Docker internal DNS — never localhost
-      DATABASE_URL:        postgresql://${DB_USER}:${DB_PASSWORD}@db:5432/${DB_NAME}
-      REDIS_URL:           redis://redis:6379
+      DB_HOST:             db
+      DB_PORT:             5432
+      DB_NAME:             ${DB_NAME}
+      DB_USER:             ${DB_USER}
+      DB_PASSWORD:         ${DB_PASSWORD}
+      REDIS_HOST:          redis
+      REDIS_PORT:          6379
       GEMINI_API_KEY_1:    ${GEMINI_API_KEY_1:-}
       GEMINI_API_KEY_2:    ${GEMINI_API_KEY_2:-}
       GEMINI_API_KEY_3:    ${GEMINI_API_KEY_3:-}
       GEMINI_API_KEY_4:    ${GEMINI_API_KEY_4:-}
+      GEMINI_MODEL:        ${GEMINI_MODEL:-gemini-2.5-flash-lite}
       SERPAPI_KEY:         ${SERPAPI_KEY:-replace-me}
       INTERNAL_API_SECRET: ${INTERNAL_API_SECRET}
       # Propagate to Python logging

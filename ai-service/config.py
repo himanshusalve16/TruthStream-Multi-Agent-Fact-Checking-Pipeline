@@ -3,13 +3,27 @@ from functools import lru_cache
 
 
 class Settings(BaseSettings):
-    database_url: str = "postgresql://postgres:postgres@localhost:5432/truthstream"
-    redis_url: str = "redis://localhost:6379"
+    db_host: str = "localhost"
+    db_port: int = 5432
+    db_name: str = "truthstream"
+    db_user: str = "postgres"
+    db_password: str = "postgres"
+
+    redis_host: str = "localhost"
+    redis_port: int = 6379
+
+    @property
+    def database_url(self) -> str:
+        return f"postgresql://{self.db_user}:{self.db_password}@{self.db_host}:{self.db_port}/{self.db_name}"
+
+    @property
+    def redis_url(self) -> str:
+        return f"redis://{self.redis_host}:{self.redis_port}"
     gemini_api_key_1: str = "replace-me"
     gemini_api_key_2: str | None = None
     gemini_api_key_3: str | None = None
     gemini_api_key_4: str | None = None
-    gemini_model: str = "gemini-1.5-pro"
+    gemini_model: str = "gemini-2.5-flash-lite"
     serpapi_key: str = "replace-me"  # optional; DuckDuckGo used if unset or empty
     internal_api_secret: str = "replace-me"
     test_mode: bool = False

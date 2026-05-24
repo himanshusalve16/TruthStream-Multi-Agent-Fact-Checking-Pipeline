@@ -122,7 +122,7 @@ async def execute_gemini_call(call_fn: Callable[[genai.Client], Any]) -> Any:
     - If a key fails (due to 429, 403, 401, 5xx after retry, or transient error after retry),
       rotate to the next available key and restart the request.
     - If all keys in the pool have been tried and failed, raise a final clean error.
-    - Permanent 400 Client error is raised immediately without retrying or rotating.
+    - Permanent 404 Model Not Found error is raised immediately without rotating keys.
     """
     total_keys = gemini_manager.get_total_keys()
     keys_tried = 0
@@ -145,37 +145,43 @@ async def execute_gemini_call(call_fn: Callable[[genai.Client], Any]) -> Any:
             # Try call
             return await call_fn(client)
         except Exception as e:
-            logger.warning(
-                "Gemini call failed on key slot %d (%s): %s",
-                gemini_manager._current_index,
-                masked_key,
-                str(e),
-            )
+            err_str = str(e).lower()
+            code = getattr(e, "code", None)
+            
+            # Extract code from APIError if applicable
+            if isinstance(e, errors.APIError) and getattr(e, "code", None):
+                code = e.code
 
-            # Check if 400 Bad Request
-            if (isinstance(e, errors.APIError) and e.code == 400) or (isinstance(e, errors.ClientError) and getattr(e, "code", None) == 400):
-                # If it's a key invalid issue, we rotate rather than raising immediately.
-                err_str = str(e).lower()
-                if "api key not valid" in err_str or "api_key_invalid" in err_str:
-                    logger.warning("API key in slot %d is invalid. Proceeding to rotate.", gemini_manager._current_index)
-                else:
-                    logger.error("Permanent 400 Bad Request error. Raising immediately.")
-                    raise e
+            # A. Invalid model (404 Not Found)
+            if code == 404 or "is not found" in err_str or "not supported" in err_str:
+                logger.error("Invalid Gemini model: %s. Stopping fallback rotation.", settings.gemini_model)
+                raise RuntimeError(f"Invalid Gemini model configuration: {settings.gemini_model}. Please use a supported model like gemini-2.5-flash-lite.") from e
 
-            # If it's transient, retry ONCE on this key
-            if is_transient_error(e):
-                logger.info("Transient error detected. Retrying once on current key after delay...")
+            # B. Quota exceeded (429)
+            elif code == 429 or "quota" in err_str or "resource_exhausted" in err_str:
+                logger.warning("Quota exceeded for key slot %d (%s).", gemini_manager._current_index, masked_key)
+                
+            # C. Invalid API Key (400 or 403 permission)
+            elif code in (400, 401, 403) and ("api key not valid" in err_str or "api_key_invalid" in err_str or "permission" in err_str):
+                logger.warning("API key in slot %d (%s) is invalid or unauthorized.", gemini_manager._current_index, masked_key)
+
+            # D. Network Timeout or E. Provider Outage (Transient)
+            elif is_transient_error(e):
+                logger.warning("Transient error/timeout on key slot %d (%s): %s. Retrying once...", gemini_manager._current_index, masked_key, str(e))
                 await asyncio.sleep(2.0)
                 try:
                     return await call_fn(client)
                 except Exception as retry_err:
-                    logger.warning(
-                        "Retry failed on key slot %d (%s): %s",
-                        gemini_manager._current_index,
-                        masked_key,
-                        str(retry_err),
-                    )
+                    logger.warning("Retry failed on key slot %d (%s). Proceeding to rotate.", gemini_manager._current_index, masked_key)
                     e = retry_err
+            
+            # Other permanent errors
+            elif code == 400:
+                logger.error("Permanent 400 Bad Request error on key slot %d (%s). Raising immediately.", gemini_manager._current_index, masked_key)
+                raise e
+                
+            else:
+                logger.warning("Unexpected error on key slot %d (%s): %s", gemini_manager._current_index, masked_key, str(e))
 
             # Rotate key and try next one if we have fallback keys
             if total_keys > 1:
@@ -187,4 +193,26 @@ async def execute_gemini_call(call_fn: Callable[[genai.Client], Any]) -> Any:
 
     # If all keys failed, raise a clean exception
     logger.error("All %d Gemini API keys in the pool have failed.", total_keys)
-    raise RuntimeError("AI provider quota temporarily exceeded. Please try again later.")
+    raise RuntimeError("AI provider quota temporarily exceeded or all keys failed. Please try again later.")
+
+def validate_gemini_model_sync():
+    """Validates the configured Gemini model using the primary API key."""
+    client = gemini_manager.get_client()
+    try:
+        logger.info("Validating Gemini model on startup: %s", settings.gemini_model)
+        client.models.get(model=settings.gemini_model)
+        logger.info("Gemini model validated successfully: %s", settings.gemini_model)
+    except Exception as e:
+        err_str = str(e).lower()
+        code = getattr(e, "code", None)
+        if isinstance(e, errors.APIError) and getattr(e, "code", None):
+            code = e.code
+
+        if code == 404 or "is not found" in err_str or "not supported" in err_str:
+            logger.error("Startup validation failed: Invalid Gemini model configured: %s.", settings.gemini_model)
+            logger.error("Supported alternatives: gemini-2.5-flash-lite, gemini-2.5-flash")
+            raise RuntimeError(f"Invalid Gemini model configuration: {settings.gemini_model}. Please use a supported model like gemini-2.5-flash-lite.") from e
+        elif code in (400, 401, 403) and ("api key not valid" in err_str or "api_key_invalid" in err_str):
+            logger.warning("Primary API key is invalid, skipping strict model validation on startup.")
+        else:
+            logger.warning("Could not cleanly validate model %s on startup, but proceeding. Error: %s", settings.gemini_model, e)

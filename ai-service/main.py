@@ -61,24 +61,26 @@ async def _connect_db_with_retry(database_url: str):
     Without retry, a single connection failure crashes the process.
     """
     last_error = None
+    delay = 2.0
     for attempt in range(1, _DB_MAX_RETRIES + 1):
         try:
             pool = await init_db_pool(database_url)
-            logger.info("Database pool connected on attempt %d", attempt)
+            logger.info("Database pool connected successfully on attempt %d", attempt)
             return pool
         except Exception as exc:
             last_error = exc
             if attempt < _DB_MAX_RETRIES:
                 logger.warning(
-                    "DB connection attempt %d/%d failed: %s — retrying in %.0fs",
-                    attempt, _DB_MAX_RETRIES, exc, _DB_RETRY_DELAY
+                    "DB connection attempt %d/%d failed. Retrying in %.1fs... Error: %s",
+                    attempt, _DB_MAX_RETRIES, delay, exc
                 )
-                await asyncio.sleep(_DB_RETRY_DELAY)
+                await asyncio.sleep(delay)
+                delay = min(delay * 1.5, 10.0)  # Exponential backoff up to 10s
             else:
-                logger.error("DB connection failed after %d attempts", _DB_MAX_RETRIES)
-    raise RuntimeError(
-        f"Could not connect to database after {_DB_MAX_RETRIES} attempts"
-    ) from last_error
+                logger.error("DB connection failed permanently after %d attempts", _DB_MAX_RETRIES)
+    
+    logger.critical("Fatal: Could not connect to database after %d attempts. Failing gracefully to avoid infinite crash-loops.", _DB_MAX_RETRIES)
+    raise SystemExit(1)
 
 
 async def _connect_redis_with_retry(redis_url: str) -> aioredis.Redis:
@@ -90,25 +92,27 @@ async def _connect_redis_with_retry(redis_url: str) -> aioredis.Redis:
     Docker bridge network.
     """
     last_error = None
+    delay = 1.0
     for attempt in range(1, _REDIS_MAX_RETRIES + 1):
         try:
             client = aioredis.from_url(redis_url, decode_responses=False)
             await client.ping()
-            logger.info("Redis connected on attempt %d", attempt)
+            logger.info("Redis connected successfully on attempt %d", attempt)
             return client
         except Exception as exc:
             last_error = exc
             if attempt < _REDIS_MAX_RETRIES:
                 logger.warning(
-                    "Redis connection attempt %d/%d failed: %s — retrying in %.0fs",
-                    attempt, _REDIS_MAX_RETRIES, exc, _REDIS_RETRY_DELAY
+                    "Redis connection attempt %d/%d failed. Retrying in %.1fs... Error: %s",
+                    attempt, _REDIS_MAX_RETRIES, delay, exc
                 )
-                await asyncio.sleep(_REDIS_RETRY_DELAY)
+                await asyncio.sleep(delay)
+                delay = min(delay * 1.5, 5.0)
             else:
-                logger.error("Redis connection failed after %d attempts", _REDIS_MAX_RETRIES)
-    raise RuntimeError(
-        f"Could not connect to Redis after {_REDIS_MAX_RETRIES} attempts"
-    ) from last_error
+                logger.error("Redis connection failed permanently after %d attempts", _REDIS_MAX_RETRIES)
+    
+    logger.critical("Fatal: Could not connect to Redis after %d attempts. Failing gracefully.", _REDIS_MAX_RETRIES)
+    raise SystemExit(1)
 
 
 # ──────────────────────────────────────────────────────────────
@@ -119,10 +123,18 @@ async def _connect_redis_with_retry(redis_url: str) -> aioredis.Redis:
 async def lifespan(app: FastAPI):
     # ── Startup ──────────────────────────────────────────────
     logger.info("Initializing database pool...")
+    env_mode = "Docker" if settings.db_host == "db" else "Local"
+    logger.info("Resolved DB Host: %s (Mode: %s)", settings.db_host, env_mode)
+    logger.info("DB Port: %s", settings.db_port)
+    logger.info("Connecting to PostgreSQL at %s:%s", settings.db_host, settings.db_port)
     app.state.db_pool = await _connect_db_with_retry(settings.database_url)
 
     logger.info("Connecting to Redis...")
     app.state.redis = await _connect_redis_with_retry(settings.redis_url)
+
+    logger.info("Validating AI Provider Configuration...")
+    from services.gemini import validate_gemini_model_sync
+    await asyncio.to_thread(validate_gemini_model_sync)
 
     logger.info("Starting %d job workers...", NUM_WORKERS)
     app.state.workers = [
