@@ -15,12 +15,26 @@ DDG_HTML_URL = "https://html.duckduckgo.com/html/"
 BOT_USER_AGENT = "TruthStream-Bot/1.0 (+https://truthstream.app/bot)"
 
 
-async def search_web(query: str, max_results: int = 10) -> List[dict]:
+async def search_web(query: str, max_results: int = 10, redis=None) -> List[dict]:
     """
     Search using SerpAPI when configured, otherwise DuckDuckGo.
     If SerpAPI fails or returns nothing, fall back to DuckDuckGo (no API key).
+    Uses Redis to cache results by query hash.
     Returns: [{url, title, snippet, rank}, ...]
     """
+    if redis:
+        import hashlib
+        import json
+        query_hash = hashlib.md5(query.encode('utf-8')).hexdigest()
+        cache_key = f"search:{query_hash}"
+        try:
+            cached = await redis.get(cache_key)
+            if cached:
+                logger.info("Search cache hit for query: %s", query)
+                return json.loads(cached.decode())
+        except Exception as e:
+            logger.warning("Failed to read search cache: %s", e)
+
     results: List[dict] = []
     if _serpapi_configured():
         results = await _search_serpapi(query, max_results)
@@ -30,6 +44,15 @@ async def search_web(query: str, max_results: int = 10) -> List[dict]:
         else:
             logger.info("SerpAPI not configured, using DuckDuckGo search")
         results = await _search_duckduckgo(query, max_results)
+
+    if redis and results:
+        try:
+            import json
+            # Cache search results for 2 hours (7200 seconds)
+            await redis.setex(cache_key, 7200, json.dumps(results))
+        except Exception as e:
+            logger.warning("Failed to write search cache: %s", e)
+
     return results
 
 
@@ -88,7 +111,7 @@ async def _search_duckduckgo(query: str, max_results: int) -> List[dict]:
     Uses httpx + BeautifulSoup (same stack as the article scraper).
     """
     try:
-        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+        async with httpx.AsyncClient(timeout=8.0, follow_redirects=True) as client:
             response = await client.post(
                 DDG_HTML_URL,
                 data={"q": query, "b": ""},
@@ -130,14 +153,16 @@ async def _search_duckduckgo(query: str, max_results: int) -> List[dict]:
 def build_claim_query(claim_text: str, claim_type: Optional[str] = None) -> str:
     """Build an optimized search query for a claim."""
     base = claim_text.strip()
+    # Remove any existing double quotes to avoid syntax issues in search engines
+    base = base.replace('"', '')
     if len(base) > 200:
         base = base[:200]
 
     if claim_type == "statistic":
-        return f'"{base}" site:gov OR site:edu OR reuters.com OR apnews.com'
+        return f'{base} site:gov OR site:edu OR reuters.com OR apnews.com'
     elif claim_type == "event":
-        return f'"{base}" fact check'
+        return f'{base} fact check'
     elif claim_type == "attribution":
-        return f'"{base}" statement'
+        return f'{base} statement'
     else:
         return base

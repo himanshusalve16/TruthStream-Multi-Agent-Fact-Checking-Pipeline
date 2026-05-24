@@ -12,7 +12,7 @@ from bs4 import BeautifulSoup
 
 logger = logging.getLogger(__name__)
 
-SCRAPE_TIMEOUT = 8.0
+SCRAPE_TIMEOUT = 4.0
 MAX_CONTENT_CHARS = 2000
 BOT_USER_AGENT = "TruthStream-Bot/1.0 (+https://truthstream.app/bot)"
 
@@ -94,18 +94,20 @@ async def scrape_url(
     """
     Fetch and scrape a URL. Returns (text, fetch_status).
     fetch_status: success|timeout|blocked|empty|ssrf_blocked|error
-    Uses Redis to cache results by URL hash.
+    Uses Redis to cache results (including status) to prevent repeating slow requests.
     """
     if not _validate_url(url):
         return "", "ssrf_blocked"
 
     # Check Redis cache
     if redis:
-        cache_key = f"scrape:{hashlib.md5(url.encode()).hexdigest()}"
+        cache_key = f"scrape_v2:{hashlib.md5(url.encode()).hexdigest()}"
         try:
-            cached = await redis.get(cache_key)
-            if cached:
-                return cached.decode(), "success"
+            cached_raw = await redis.get(cache_key)
+            if cached_raw:
+                import json
+                cached = json.loads(cached_raw.decode())
+                return cached.get("text", ""), cached.get("status", "success")
         except Exception:
             pass
 
@@ -119,37 +121,57 @@ async def scrape_url(
             response = await client.get(url)
 
             if response.status_code in (401, 402, 403):
-                return response.text[:500], "blocked"
+                text, status = response.text[:500], "blocked"
+            elif response.status_code >= 400:
+                text, status = "", f"http_{response.status_code}"
+            else:
+                content_type = response.headers.get("content-type", "")
+                if "text" not in content_type and "html" not in content_type:
+                    text, status = "", "non_html"
+                else:
+                    text = _extract_text(response.text, url)
+                    if not text or len(text) < 50:
+                        text, status = "", "empty"
+                    else:
+                        text, status = text, "success"
 
-            if response.status_code >= 400:
-                return "", f"http_{response.status_code}"
-
-            content_type = response.headers.get("content-type", "")
-            if "text" not in content_type and "html" not in content_type:
-                return "", "non_html"
-
-            text = _extract_text(response.text, url)
-
-            if not text or len(text) < 50:
-                return "", "empty"
-
-            # Cache in Redis
+            # Cache the outcome (success or failure) in Redis
             if redis:
                 try:
-                    await redis.setex(cache_key, ttl, text)
+                    import json
+                    # Cache successful scrapes for 6 hours, failures/errors for 1 hour to prevent retrying dead/slow links
+                    cache_ttl = ttl if status == "success" else 3600
+                    await redis.setex(cache_key, cache_ttl, json.dumps({
+                        "text": text,
+                        "status": status
+                    }))
                 except Exception:
                     pass
 
-            return text, "success"
+            return text, status
 
     except httpx.TimeoutException:
-        return "", "timeout"
+        status = "timeout"
     except httpx.RequestError as e:
         logger.warning("Scrape request error for %s: %s", url, e)
-        return "", "error"
+        status = "error"
     except Exception as e:
         logger.error("Scrape unexpected error for %s: %s", url, e)
-        return "", "error"
+        status = "error"
+
+    # Cache errors/timeouts for 1 hour as well to avoid bottlenecking subsequent claims
+    if redis:
+        try:
+            import json
+            cache_key = f"scrape_v2:{hashlib.md5(url.encode()).hexdigest()}"
+            await redis.setex(cache_key, 3600, json.dumps({
+                "text": "",
+                "status": status
+            }))
+        except Exception:
+            pass
+
+    return "", status
 
 
 async def _fetch_article_url_once(url: str) -> tuple[str, str]:

@@ -85,7 +85,8 @@ export interface HydratePayload {
   claims: Claim[]
   sourcesByClaim: Record<string, Source[]>
   bias: BiasData | null
-  verdict: VerdictData
+  verdict: VerdictData | null
+  stage?: Stage
 }
 
 const initialState: JobState = {
@@ -128,8 +129,8 @@ function reducer(state: JobState, action: Action): JobState {
         sourcesByClaim: action.payload.sourcesByClaim,
         bias: action.payload.bias,
         verdict: action.payload.verdict,
-        stage: 'complete',
-        stageMessage: '',
+        stage: action.payload.stage ?? (action.payload.verdict ? 'complete' : 'fetching_article'),
+        stageMessage: action.payload.stage === 'complete' ? '' : (state.stageMessage || 'Processing pipeline...'),
         error: null,
       }
     case 'RESET':

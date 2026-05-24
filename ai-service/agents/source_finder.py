@@ -44,10 +44,10 @@ async def find_sources(
     Returns ClaimSourcesResult.
     """
     query = build_claim_query(claim.text, claim.claim_type)
-    results = await search_web(query, max_results=10)
+    results = await search_web(query, max_results=10, redis=redis)
 
-    # Filter to top MAX_SOURCES by quality before scraping
-    top_results = results[:MAX_SOURCES * 2]  # scrape extra to compensate for failures
+    # Filter to top MAX_SOURCES + 2 by quality before scraping
+    top_results = results[:MAX_SOURCES + 2]  # scrape extra to compensate for failures
 
     # Scrape in parallel
     sem = asyncio.Semaphore(MAX_CONCURRENT_SCRAPES)

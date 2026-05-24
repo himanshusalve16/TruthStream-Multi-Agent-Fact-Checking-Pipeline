@@ -277,19 +277,25 @@ async def process_job(job_id: str, redis: aioredis.Redis, pool) -> None:
             return
 
         # ── Step 4: Embed claims + deduplicate + insert ──
-        embeddings = await embed_text_batch([c.text for c in claims])
-        inserted_claims: list[ClaimSchema] = []
+        # In-memory deduplication: filter out exact/near-exact duplicates within the same job
+        unique_claims = []
+        seen_texts = set()
+        for c in claims:
+            txt_norm = c.text.strip().lower()
+            if txt_norm not in seen_texts:
+                seen_texts.add(txt_norm)
+                unique_claims.append(c)
+        claims = unique_claims
 
-        for i, claim in enumerate(claims):
-            emb = embeddings[i] if i < len(embeddings) else []
-            # Deduplication check
+        embeddings = await embed_text_batch([c.text for c in claims])
+        
+        async def process_single_claim(claim: ClaimSchema, emb: list[float]) -> ClaimSchema:
             if emb:
                 similar = await queries.find_similar_claim(pool, emb)
                 if similar:
                     logger.info("Near-duplicate claim found (id=%s), skipping insert", similar["id"])
                     claim.claim_id = str(similar["id"])
-                    inserted_claims.append(claim)
-                    continue
+                    return claim
 
             claim_id = await queries.insert_claim(
                 pool, job_id, article_id,
@@ -298,7 +304,14 @@ async def process_job(job_id: str, redis: aioredis.Redis, pool) -> None:
                 emb or None,
             )
             claim.claim_id = claim_id
-            inserted_claims.append(claim)
+            return claim
+
+        tasks = []
+        for i, claim in enumerate(claims):
+            emb = embeddings[i] if i < len(embeddings) else []
+            tasks.append(process_single_claim(claim, emb))
+
+        inserted_claims = list(await asyncio.gather(*tasks))
 
         # Publish claims extracted event
         await publish_event(redis, job_id, "claims_extracted", {

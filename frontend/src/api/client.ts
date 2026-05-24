@@ -1,22 +1,23 @@
 import axios from 'axios'
 
-export const API_BASE = import.meta.env.VITE_API_BASE_URL;
+export const API_BASE = import.meta.env.VITE_API_BASE_URL || '';
 
 if (!API_BASE || !API_BASE.startsWith('http')) {
-  const errorMsg = "Invalid backend API base URL configured. VITE_API_BASE_URL is missing or invalid.";
-  console.error(`[TruthStream API Critical Error] ${errorMsg}`);
-  throw new Error(errorMsg);
+  console.warn(`[TruthStream API Warning] VITE_API_BASE_URL is missing or invalid: "${API_BASE}". API requests will fail.`);
+} else {
+  console.log(`[TruthStream Startup] Centralized VITE_API_BASE_URL: "${API_BASE}"`);
 }
 
-console.log(`[TruthStream Startup] Centralized VITE_API_BASE_URL: "${API_BASE}"`);
-
 const client = axios.create({
-  baseURL: API_BASE,
+  baseURL: API_BASE || 'http://localhost:8080',
   headers: { 'Content-Type': 'application/json' },
 })
 
 // Request diagnostic logger
 client.interceptors.request.use((config) => {
+  if (!API_BASE || !API_BASE.startsWith('http')) {
+    throw new Error("Invalid backend API base URL configured. VITE_API_BASE_URL is missing or invalid. Please check your environment settings.");
+  }
 
   let absoluteUrl = config.url || '';
   if (!absoluteUrl.startsWith('http://') && !absoluteUrl.startsWith('https://')) {
