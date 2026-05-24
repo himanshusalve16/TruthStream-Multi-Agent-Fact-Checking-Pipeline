@@ -177,10 +177,10 @@ async def scrape_url(
 async def _fetch_article_url_once(url: str) -> tuple[str, str]:
     """Single attempt to fetch article text."""
     async with httpx.AsyncClient(
-            timeout=10.0,
+            timeout=5.0,  # Cap timeout to 5.0 seconds
             headers={"User-Agent": BOT_USER_AGENT},
             follow_redirects=True,
-            max_redirects=5,
+            max_redirects=3,
     ) as client:
         response = await client.get(url)
         response.raise_for_status()
@@ -196,33 +196,36 @@ async def _fetch_article_url_once(url: str) -> tuple[str, str]:
 
 async def fetch_article_url(url: str) -> tuple[str, str]:
     """
-    Fetch a full article URL for analysis with exponential backoff retries.
+    Fetch a full article URL for analysis with bounded, rapid retries.
     Returns (raw_html_text, fetch_status).
     """
     if not _validate_url(url):
         raise ValueError(f"URL failed SSRF validation: {url}")
 
-    delays = [2, 4, 8]
     last_error: Exception | None = None
 
-    for attempt in range(3):
+    for attempt in range(2):  # Max 2 attempts total
         try:
             return await _fetch_article_url_once(url)
-        except httpx.TimeoutException as e:
-            last_error = TimeoutError(f"Article fetch timed out: {url}")
-            logger.warning("Article fetch attempt %d timed out for %s", attempt + 1, url)
+        except (httpx.TimeoutException, httpx.NetworkError) as e:
+            last_error = TimeoutError(f"Article fetch timed out or network error: {url}")
+            logger.warning("Article fetch attempt %d failed for %s: %s", attempt + 1, url, e)
         except httpx.HTTPStatusError as e:
             last_error = ValueError(f"HTTP {e.response.status_code} fetching {url}")
             logger.warning("Article fetch attempt %d HTTP error for %s: %s", attempt + 1, url, e)
+            # Skip retry on standard client errors (400-499) except request timeout (408)
+            if e.response.status_code < 500 and e.response.status_code != 408:
+                break
         except Exception as e:
             last_error = e
             logger.warning("Article fetch attempt %d failed for %s: %s", attempt + 1, url, e)
+            break
 
-        if attempt < 2:
-            await asyncio.sleep(delays[attempt])
+        if attempt < 1:
+            await asyncio.sleep(1.0)  # Wait only 1 second before retry
 
     if isinstance(last_error, TimeoutError):
         raise last_error
     if isinstance(last_error, ValueError):
         raise last_error
-    raise ValueError(f"Could not fetch article after 3 attempts: {url}")
+    raise ValueError(f"Could not fetch article: {last_error or 'Unknown error'}")

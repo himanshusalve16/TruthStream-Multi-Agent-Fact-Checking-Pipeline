@@ -42,15 +42,13 @@ export default function LandingPage() {
       <div className="glow-spot top-[20%] right-[10%] w-[600px] h-[600px] bg-purple-500/5 opacity-50 rounded-full" />
 
       {/* Modern Sticky Navigation */}
-      <header className="sticky top-0 z-50 w-full border-b border-border bg-bg-glass backdrop-blur-md transition-all duration-300">
-        <div className="container mx-auto px-6 h-16 flex items-center justify-between">
-          <Link to="/" className="flex items-center gap-2 text-xl font-extrabold tracking-tight group">
-            <span className="flex items-center justify-center w-8 h-8 rounded-lg bg-gradient-to-br from-indigo-500 to-purple-600 text-white shadow-glow transition-transform duration-300 group-hover:scale-105">
-              ⚡
+      <header className="sticky top-0 z-50 w-full border-b border-white/[0.04] bg-bg-glass backdrop-blur-md shadow-[0_4px_30px_rgba(0,0,0,0.4),0_1px_3px_rgba(99,102,241,0.05)] transition-all duration-300">
+        <div className="container mx-auto px-4 sm:px-6 h-16 flex items-center justify-between">
+          <Link to="/" className="flex items-center gap-1.5 text-xl font-extrabold tracking-tight group">
+            <span className="bg-gradient-to-r from-white to-text-dim bg-clip-text text-transparent font-black">
+              Truth<span className="bg-gradient-to-r from-indigo-400 to-purple-500 bg-clip-text text-transparent">Stream</span>
             </span>
-            <span className="bg-gradient-to-r from-white to-text-dim bg-clip-text text-transparent font-bold">
-              Truth<span className="text-accent font-black">Stream</span>
-            </span>
+            <span className="w-1.5 h-1.5 rounded-full bg-indigo-500 shadow-glow" />
           </Link>
           <nav className="flex items-center gap-4">
           </nav>

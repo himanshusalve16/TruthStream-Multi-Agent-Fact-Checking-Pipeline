@@ -56,7 +56,7 @@ export default function SourceCard({ source }: Props) {
             href={source.url}
             target="_blank"
             rel="noopener noreferrer"
-            className="flex items-center gap-1 text-sm font-bold text-white hover:text-accent transition-colors duration-150 min-w-0 max-w-[70%]"
+            className="flex items-center gap-1 text-sm font-bold text-white hover:text-accent transition-colors duration-150 min-w-0 max-w-full sm:max-w-[70%]"
             title={source.title || source.url}
           >
             <span className="truncate">{source.title || source.url}</span>

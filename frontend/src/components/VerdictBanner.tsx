@@ -79,14 +79,14 @@ export default function VerdictBanner({ verdict, confidence, summary }: Props) {
         </div>
 
         {/* Verdict Details */}
-        <div className="flex-1 text-left min-w-0">
-          <div className="flex items-center gap-3 mb-3">
-            <div className="flex items-center justify-center w-10 h-10 rounded-xl bg-white/[0.02] border border-white/[0.04]">
+        <div className="flex-1 text-center sm:text-left min-w-0 w-full">
+          <div className="flex flex-col sm:flex-row items-center gap-3 mb-3">
+            <div className="flex items-center justify-center w-10 h-10 rounded-xl bg-white/[0.02] border border-white/[0.04] flex-shrink-0">
               {meta.icon}
             </div>
             <div>
               <span className="text-[10px] text-text-muted font-bold uppercase tracking-widest block">Overall Consensus Verdict</span>
-              <h2 className={`text-2xl font-black tracking-tight leading-none ${meta.textColor}`}>
+              <h2 className={`text-xl sm:text-2xl font-black tracking-tight leading-none ${meta.textColor}`}>
                 {meta.label}
               </h2>
             </div>

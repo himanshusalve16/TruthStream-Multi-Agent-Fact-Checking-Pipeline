@@ -51,10 +51,13 @@ export interface VerdictData {
 
 export type Stage =
   | 'idle'
+  | 'queued'
   | 'fetching_article'
+  | 'extracting_content'
   | 'extracting_claims'
   | 'sourcing_claims'
   | 'judging'
+  | 'finalizing'
   | 'complete'
   | 'error'
 

@@ -1,48 +1,62 @@
 import { useState, useEffect } from 'react'
 import { motion } from 'framer-motion'
-import { Terminal, CheckCircle, Search, Globe, Scale } from 'lucide-react'
+import { 
+  Terminal as TerminalIcon, 
+  CheckCircle, 
+  Search, 
+  Globe, 
+  Scale, 
+  Cpu
+} from 'lucide-react'
 import type { Stage } from '../context/JobContext'
 
-const STAGES: { key: Stage; label: string; icon: React.ReactNode; color: string }[] = [
-  { key: 'fetching_article',  label: 'Fetching',   icon: <Globe size={18} />, color: '#818cf8' },
-  { key: 'extracting_claims', label: 'Extracting', icon: <Search size={18} />, color: '#c084fc' },
-  { key: 'sourcing_claims',   label: 'Sourcing',   icon: <Terminal size={18} />, color: '#38bdf8' },
-  { key: 'judging',           label: 'Judging',    icon: <Scale size={18} />, color: '#a855f7' },
-  { key: 'complete',          label: 'Complete',   icon: <CheckCircle size={18} />, color: '#34d399' },
+const STAGES: { key: Stage; label: string; icon: React.ReactNode; color: string; description: string }[] = [
+  { key: 'fetching_article',  label: 'Parser Node',      icon: <Globe size={15} />, color: '#818cf8', description: 'Downloads & cleans target content' },
+  { key: 'extracting_claims', label: 'Claim Extractor',  icon: <Search size={15} />, color: '#c084fc', description: 'Isolates verifiable claims' },
+  { key: 'sourcing_claims',   label: 'Sourcing Crawler', icon: <TerminalIcon size={15} />, color: '#38bdf8', description: 'Crawls web indices & stance' },
+  { key: 'judging',           label: 'Veracity Judge',    icon: <Scale size={15} />, color: '#a855f7', description: 'Synthesizes final verdict' },
+  { key: 'complete',          label: 'Synthesized Output',icon: <CheckCircle size={15} />, color: '#34d399', description: 'Results published' },
 ]
 
 const STAGE_ORDER: Stage[] = [
-  'fetching_article', 'extracting_claims', 'sourcing_claims', 'judging', 'complete'
+  'queued', 'fetching_article', 'extracting_content', 'extracting_claims', 'sourcing_claims', 'judging', 'finalizing', 'complete'
 ]
 
 const SUBSTAGE_LOGS: Record<Stage, string[]> = {
+  queued: [
+    'Job registered at orchestrator gateway...',
+    'Assigning pipeline thread worker...',
+    'Thread initialized. Queue cleared.'
+  ],
   fetching_article: [
     'Connecting to target web host...',
     'Bypassing Paywalls & Content Scrapers...',
-    'Extracting raw article body content...',
-    'Sanitizing markup and filtering advertisements...',
-    'Payload isolated (Text content extracted).'
+    'Extracting raw article body content...'
+  ],
+  extracting_content: [
+    'Sanitizing raw HTML input tags...',
+    'Cleaned content body parsed successfully.',
+    'Checking text length & complexity metrics...'
   ],
   extracting_claims: [
     'Initializing Claim Extractor Agent...',
     'Tokenizing input texts & parsing syntax...',
-    'Isolating checkable factual claims...',
-    'Filtering subjective opinions & hyperbole...',
-    'Identified checkable assertions.'
+    'Isolating checkable factual claims...'
   ],
   sourcing_claims: [
     'Deploying Search Agent network...',
-    'Querying semantic indices and news archives...',
-    'Scraping corroborating articles & citation text...',
-    'Filtering for reliable journalistic domains...',
-    'Calculating source stances (Supports/Refutes/Neutral)...'
+    'Querying semantic news indices...',
+    'Scraping corroborating source links...'
   ],
   judging: [
     'Spawning Bias Analyst Agent...',
-    'Scoring sentiment levels & emotional framing...',
-    'Cross-referencing claims against source stances...',
-    'Compiling final confidence-weighted verdict matrix...',
-    'Packaging results...'
+    'Scoring framing bias & loaded language...',
+    'Cross-referencing stances with veracity judge...'
+  ],
+  finalizing: [
+    'Writing final consensus matrix to database...',
+    'Broadcasting terminal event stream...',
+    'Done.'
   ],
   complete: [
     'Pipeline complete.',
@@ -65,13 +79,31 @@ export default function LoadingState({ stage, message }: Props) {
   const currentIdx = STAGE_ORDER.indexOf(stage)
   const [logs, setLogs] = useState<string[]>([])
   const [currentLogIdx, setCurrentLogIdx] = useState(0)
+  const [stageTimer, setStageTimer] = useState(0)
+  const [totalTimer, setTotalTimer] = useState(0)
+
+  // Reset stage timer on stage transitions
+  useEffect(() => {
+    setStageTimer(0)
+  }, [stage])
+
+  // Count seconds elapsed for live indicators
+  useEffect(() => {
+    if (stage === 'complete' || stage === 'error' || stage === 'idle') return
+
+    const interval = setInterval(() => {
+      setStageTimer(prev => prev + 1)
+      setTotalTimer(prev => prev + 1)
+    }, 1000)
+
+    return () => clearInterval(interval)
+  }, [stage])
 
   // Append new logs corresponding to the current stage
   useEffect(() => {
     const stageLogs = SUBSTAGE_LOGS[stage] || []
     if (stageLogs.length > 0) {
-      // Seed first log of new stage immediately
-      setLogs(prev => [...prev, `[system] > ${stageLogs[0]}`])
+      setLogs(prev => [...prev, `[sys] > ${stageLogs[0]}`])
       setCurrentLogIdx(1)
     }
   }, [stage])
@@ -84,141 +116,239 @@ export default function LoadingState({ stage, message }: Props) {
     const timer = setTimeout(() => {
       setLogs(prev => [...prev, `[agent] > ${stageLogs[currentLogIdx]}`])
       setCurrentLogIdx(prev => prev + 1)
-    }, 1800)
+    }, 1200)
 
     return () => clearTimeout(timer)
   }, [stage, currentLogIdx])
 
-  return (
-    <div id="loading-state" className="glass-card p-8 border border-border bg-bg-glass backdrop-blur-xl rounded-2xl shadow-card relative overflow-hidden">
-      {/* Decorative background glow */}
-      <div className="absolute -top-12 -right-12 w-32 h-32 bg-accent/5 rounded-full blur-2xl pointer-events-none" />
+  const nodes = [
+    { name: 'Parser', x: 60,   y: 60, stages: ['fetching_article', 'extracting_content'], color: '#818cf8' },
+    { name: 'Extractor', x: 200,  y: 60, stages: ['extracting_claims'], color: '#c084fc' },
+    { name: 'Crawler', x: 340,  y: 60, stages: ['sourcing_claims'],   color: '#38bdf8' },
+    { name: 'Judge', x: 480,  y: 60, stages: ['judging', 'finalizing'], color: '#a855f7' },
+    { name: 'Output', x: 620,  y: 60, stages: ['complete'],          color: '#34d399' },
+  ]
 
-      {/* Main loading status header */}
-      <div className="flex items-center gap-4 mb-8">
-        {stage !== 'complete' ? (
-          <div className="relative flex items-center justify-center">
-            <span className="premium-loader" />
-            <div className="absolute w-1.5 h-1.5 rounded-full bg-accent animate-ping" />
+  // Formats system log tags with color-coding
+  const formatLog = (logText: string) => {
+    if (logText.startsWith('[sys]')) {
+      return (
+        <span>
+          <span className="text-indigo-400 font-bold">[system]</span> {logText.slice(7)}
+        </span>
+      )
+    }
+    if (logText.startsWith('[agent]')) {
+      return (
+        <span>
+          <span className="text-sky-400 font-bold">[agent]</span> {logText.slice(9)}
+        </span>
+      )
+    }
+    return logText
+  }
+
+  return (
+    <div id="loading-state" className="flex flex-col gap-6 w-full">
+      {/* Fallback Warning Alert Banner */}
+      {message && message.includes('⚠️ Fallback') && (
+        <div className="flex items-center gap-3 px-4 py-3 rounded-xl border border-amber-500/20 bg-amber-500/5 text-amber-300 text-xs font-medium animate-pulse text-left">
+          <span className="text-base select-none">⚠️</span>
+          <div className="flex-1">
+            <p className="font-bold text-amber-200">Active Fallback Protocol</p>
+            <p className="opacity-90 mt-0.5">{message}</p>
           </div>
-        ) : (
-          <div className="w-8 h-8 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 flex items-center justify-center">
-            <CheckCircle size={18} />
+        </div>
+      )}
+
+      {/* Dynamic Multi-Agent Orchestration Map */}
+      <div className="glass-card p-6 border border-border bg-bg-glass backdrop-blur-xl rounded-2xl shadow-card relative">
+        <div className="flex items-center justify-between mb-6">
+          <div className="text-left">
+            <h3 className="text-xs font-bold text-text-dim uppercase tracking-wider flex items-center gap-1.5">
+              <Cpu size={13} className="text-accent animate-spin" style={{ animationDuration: '3s' }} /> Multi-Agent Orchestration Board
+            </h3>
+            <p className="text-[10px] text-text-muted mt-0.5">Live routing & packet tracking metrics</p>
           </div>
-        )}
-        <div className="text-left">
-          <p className="font-extrabold text-white text-base tracking-tight">
-            {message || 'Fact-check in progress'}
-          </p>
-          <p className="text-xs text-text-dim mt-0.5 font-medium">
-            Multi-agent consensus typically takes 30–60 seconds
-          </p>
+          <div className="flex items-center gap-4 text-[10px] text-text-muted font-mono bg-slate-950/80 px-3 py-1.5 rounded-lg border border-white/[0.04]">
+            <div className="flex items-center gap-1.5">
+              <span className={`w-1.5 h-1.5 rounded-full bg-emerald-500 ${stage !== 'complete' ? 'animate-ping' : ''}`} />
+              <span>DIAG: {stage === 'complete' ? 'COMPLETE' : 'ONLINE'}</span>
+            </div>
+            <div>ELAPSED: {totalTimer}s</div>
+          </div>
+        </div>
+
+        {/* Scaled Flowchart SVG */}
+        <div className="overflow-x-auto scrollbar pb-4 mb-4">
+          <svg viewBox="0 0 680 120" className="mx-auto block w-full h-auto min-w-[580px]">
+            {/* SVG Glowing Filter */}
+            <defs>
+              <filter id="agent-active-glow" x="-30%" y="-30%" width="160%" height="160%">
+                <feGaussianBlur stdDeviation="5" result="blur" />
+                <feMerge>
+                  <feMergeNode in="blur" />
+                  <feMergeNode in="SourceGraphic" />
+                </feMerge>
+              </filter>
+            </defs>
+
+            {/* Connection Lines with Dash offset animations */}
+            {nodes.slice(0, -1).map((node, idx) => {
+              const nextNode = nodes[idx + 1]
+              const maxCurrentNodeStageIdx = Math.max(...node.stages.map(s => STAGE_ORDER.indexOf(s as Stage)))
+              const isPassed = currentIdx > maxCurrentNodeStageIdx
+              const isActive = node.stages.includes(stage)
+              
+              return (
+                <path
+                  key={`line-${idx}`}
+                  d={`M ${node.x + 20} ${node.y} L ${nextNode.x - 20} ${nextNode.y}`}
+                  stroke={isPassed ? '#10b981' : isActive ? '#6366f1' : 'rgba(255, 255, 255, 0.05)'}
+                  strokeWidth={2}
+                  className={isActive ? 'svg-flow-path' : ''}
+                  style={{ transition: 'stroke 0.4s ease' }}
+                />
+              )
+            })}
+
+            {/* Agent Nodes rendering */}
+            {nodes.map((node) => {
+              const stageIdxs = node.stages.map(s => STAGE_ORDER.indexOf(s as Stage))
+              const maxStageIdx = Math.max(...stageIdxs)
+              const isFinished = currentIdx > maxStageIdx || (stage === 'complete' && node.stages.includes('complete'))
+              const isActive = node.stages.includes(stage)
+
+              const activeColor = node.color
+              
+              return (
+                <g key={node.name} transform={`translate(${node.x}, ${node.y})`}>
+                  {/* Outer Pulsating halo */}
+                  {isActive && (
+                    <circle
+                      r={26}
+                      fill="none"
+                      stroke={activeColor}
+                      strokeWidth={1.5}
+                      className="animate-ping opacity-25"
+                      style={{ animationDuration: '2s' }}
+                    />
+                  )}
+
+                  {/* Node Circle */}
+                  <circle
+                    r={20}
+                    fill={isFinished ? '#10b981' : isActive ? activeColor : 'rgba(15, 23, 42, 0.8)'}
+                    stroke={isFinished ? '#10b981' : isActive ? '#ffffff' : 'rgba(255, 255, 255, 0.08)'}
+                    strokeWidth={isActive ? 2 : 1.5}
+                    filter={isActive ? 'url(#agent-active-glow)' : 'none'}
+                    style={{ transition: 'fill 0.4s ease, stroke 0.4s ease' }}
+                  />
+
+                  {/* Icon */}
+                  <g fill="#ffffff" stroke="#ffffff" className="text-white">
+                    <foreignObject x="-8" y="-8" width="16" height="16">
+                      <div className="text-white flex items-center justify-center">
+                        {STAGES.find(s => s.key === node.stages[0])?.icon || <Globe size={15} />}
+                      </div>
+                    </foreignObject>
+                  </g>
+
+                  {/* Label */}
+                  <text
+                    y={36}
+                    textAnchor="middle"
+                    fill={isFinished ? '#10b981' : isActive ? '#ffffff' : '#6b7280'}
+                    fontSize={10}
+                    fontWeight="700"
+                    fontFamily="Inter, sans-serif"
+                    style={{ transition: 'fill 0.4s ease' }}
+                  >
+                    {node.name}
+                  </text>
+                </g>
+              )
+            })}
+          </svg>
+        </div>
+
+        {/* Live Diagnostics Metrics Ticker */}
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 bg-slate-950/60 p-4 border border-white/[0.03] rounded-xl text-left">
+          <div className="flex flex-col">
+            <span className="text-[9px] text-text-muted font-bold tracking-wider uppercase">Active Stage</span>
+            <span className="text-xs font-bold text-white font-mono flex items-center gap-1.5 mt-0.5">
+              <span className={`w-1.5 h-1.5 rounded-full ${stage === 'complete' ? 'bg-emerald-500' : 'bg-indigo-500 animate-pulse'}`} />
+              <span className="capitalize">{stage.replace('_', ' ')}</span>
+            </span>
+          </div>
+          <div className="flex flex-col">
+            <span className="text-[9px] text-text-muted font-bold tracking-wider uppercase">Stage Timer</span>
+            <span className="text-xs font-bold text-white font-mono mt-0.5">
+              {stage === 'complete' ? '0.0s' : `${stageTimer}s`}
+            </span>
+          </div>
+          <div className="flex flex-col">
+            <span className="text-[9px] text-text-muted font-bold tracking-wider uppercase">Pipeline Engine</span>
+            <span className="text-xs font-bold text-indigo-400 font-mono mt-0.5">gemini-2.5-flash-lite</span>
+          </div>
+          <div className="flex flex-col">
+            <span className="text-[9px] text-text-muted font-bold tracking-wider uppercase">Active Claim ID</span>
+            <span className="text-xs font-bold text-white font-mono mt-0.5 truncate">
+              {stage === 'complete' ? 'none' : 'claim_idx_0' + (currentIdx + 1)}
+            </span>
+          </div>
         </div>
       </div>
 
-      {/* Visual Steps Progress Bar */}
-      <div className="flex flex-col sm:flex-row gap-6 sm:gap-0 justify-between items-start sm:items-center mb-8 bg-slate-950/40 p-4 sm:p-5 rounded-xl border border-border">
-        {STAGES.map((s, i) => {
-          const isDone = i < currentIdx
-          const isActive = i === currentIdx
-          
-          return (
-            <div key={s.key} className="flex flex-row sm:flex-col items-center gap-3 sm:gap-2 flex-1 w-full last:flex-initial">
-              {/* Dot & Icon */}
-              <div className="flex items-center gap-3 sm:flex-col sm:gap-2 relative">
-                <div 
-                  className={`w-9 h-9 rounded-lg flex items-center justify-center transition-all duration-300 ${
-                    isDone 
-                      ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' 
-                      : isActive 
-                        ? 'bg-indigo-500/10 text-indigo-400 border border-indigo-500/30 shadow-glow'
-                        : 'bg-white/[0.02] text-text-muted border border-border'
-                  }`}
-                  style={isActive ? { boxShadow: `0 0 15px ${s.color}25` } : {}}
-                >
-                  {s.icon}
-                </div>
-                
-                {/* Visual state dot */}
-                <div className={`stage-dot absolute -bottom-1 sm:-bottom-1 sm:left-1/2 sm:-translate-x-1/2 hidden ${isDone ? 'done' : isActive ? 'active' : ''}`} />
-              </div>
-
-              {/* Text label */}
-              <div className="flex flex-col sm:items-center text-left sm:text-center">
-                <span className={`text-xs font-bold ${
-                  isDone 
-                    ? 'text-emerald-400' 
-                    : isActive 
-                      ? 'text-indigo-300' 
-                      : 'text-text-muted'
-                }`}>
-                  {s.label}
-                </span>
-                <span className="text-[10px] text-text-muted hidden sm:inline">
-                  {isDone ? 'Finished' : isActive ? 'Active' : 'Pending'}
-                </span>
-              </div>
-
-              {/* Connection Line */}
-              {i < STAGES.length - 1 && (
-                <div className="hidden sm:block flex-1 h-[2px] bg-border mx-4 relative min-w-[30px]">
-                  <motion.div 
-                    className="absolute top-0 left-0 h-full bg-gradient-to-r from-indigo-500 to-purple-500" 
-                    initial={{ width: '0%' }}
-                    animate={{ width: isDone ? '100%' : '0%' }}
-                    transition={{ duration: 0.4 }}
-                  />
-                </div>
-              )}
-            </div>
-          )
-        })}
-      </div>
-
-      {/* Agent Log Terminal */}
-      <div className="text-left">
-        <div className="flex items-center justify-between mb-2">
-          <label className="text-xs font-bold text-text-dim uppercase tracking-wider flex items-center gap-1.5">
-            <Terminal size={13} className="text-accent" /> Live Agent Execution Feed
+      {/* Cyber Terminal Console */}
+      <div className="text-left w-full">
+        <div className="flex items-center justify-between mb-2 px-1">
+          <label className="text-[10px] font-bold text-text-dim uppercase tracking-wider flex items-center gap-1.5">
+            <TerminalIcon size={12} className="text-accent" /> Agent Consensus Output
           </label>
-          <span className="text-[10px] font-mono text-text-muted">stdout // channel-sse</span>
+          <div className="flex items-center gap-2">
+            <span className="text-[9px] font-mono text-text-muted">stdout // stream-event</span>
+            <div className={`w-2 h-2 rounded-full bg-indigo-500 ${stage !== 'complete' ? 'animate-pulse' : ''}`} />
+          </div>
         </div>
         
-        <div className="bg-slate-950 border border-border p-4 rounded-xl font-mono text-xs text-text-dim leading-relaxed h-[130px] overflow-y-auto scrollbar">
-          <div className="flex flex-col gap-1">
+        {/* Terminal Box with CRT Scanline Effect */}
+        <div className="scanlines bg-slate-950 border border-border p-4 rounded-2xl font-mono text-xs text-text-dim leading-relaxed h-[160px] overflow-y-auto scrollbar shadow-inner relative">
+          <div className="flex flex-col gap-1 relative z-20">
             {logs.map((log, index) => (
               <motion.div 
                 key={index}
-                initial={{ opacity: 0, x: -5 }}
+                initial={{ opacity: 0, x: -4 }}
                 animate={{ opacity: 1, x: 0 }}
-                transition={{ duration: 0.2 }}
-                className={log.includes('[system]') ? 'text-indigo-400' : 'text-text-dim'}
+                transition={{ duration: 0.15 }}
+                className="font-medium"
               >
-                <span className="text-text-muted select-none">[{new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', second:'2-digit'})}] </span>
-                {log}
+                <span className="text-text-muted/60 select-none">[{new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', second:'2-digit'})}] </span>
+                {formatLog(log)}
               </motion.div>
             ))}
-            {/* Pulsing prompt caret if processing */}
-            {stage !== 'complete' && (
-              <div className="flex items-center gap-1 text-accent mt-1">
-                <span>[pipeline] &gt; awaiting consensus...</span>
-                <span className="w-1.5 h-3.5 bg-accent animate-pulse" />
+            
+            {/* Blinking block terminal cursor */}
+            {stage !== 'complete' && stage !== 'error' && (
+              <div className="flex items-center gap-1 mt-1 font-bold text-accent">
+                <span>[pipeline] &gt; {message || 'awaiting consensus...'}</span>
+                <span className="terminal-cursor" />
               </div>
             )}
           </div>
         </div>
       </div>
 
-      {/* Skeletons to hint at final layout */}
-      {stage !== 'complete' && (
-        <div className="mt-8 pt-6 border-t border-border/60">
+      {/* Modern Shimmering Skeleton Loader */}
+      {stage !== 'complete' && stage !== 'error' && (
+        <div className="glass-card p-6 border border-border bg-bg-glass backdrop-blur-xl rounded-2xl shadow-card">
           <div className="flex justify-between items-center mb-4">
-            <div className="h-4 w-32 skeleton" />
-            <div className="h-6 w-12 skeleton" />
+            <div className="h-4 w-28 skeleton" />
+            <div className="h-6 w-16 skeleton" />
           </div>
           <div className="space-y-3">
-            <div className="h-16 w-full skeleton opacity-40" />
-            <div className="h-12 w-full skeleton opacity-20" />
+            <div className="h-16 w-full skeleton opacity-30" />
+            <div className="h-12 w-full skeleton opacity-15" />
           </div>
         </div>
       )}

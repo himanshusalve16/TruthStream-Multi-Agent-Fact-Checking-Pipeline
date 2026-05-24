@@ -430,3 +430,50 @@ body {
 .stance-unclear {
   border-left: 4px solid rgba(255, 255, 255, 0.15) !important;
 }
+
+/* ─── Premium Redesign & Animation Additions ──────────────────── */
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+.terminal-cursor {
+  display: inline-block;
+  width: 6px;
+  height: 12px;
+  background-color: #6366f1;
+  animation: blink 1s step-end infinite;
+  vertical-align: middle;
+  margin-left: 3px;
+}
+
+@keyframes dashflow {
+  to {
+    stroke-dashoffset: -20;
+  }
+}
+
+.svg-flow-path {
+  stroke-dasharray: 6, 4;
+  animation: dashflow 1.2s linear infinite;
+}
+
+.scanlines {
+  position: relative;
+  overflow: hidden;
+}
+
+.scanlines::before {
+  content: " ";
+  display: block;
+  position: absolute;
+  top: 0; left: 0; bottom: 0; right: 0;
+  background: linear-gradient(
+    rgba(18, 16, 16, 0) 50%, 
+    rgba(0, 0, 0, 0.12) 50%
+  );
+  background-size: 100% 4px;
+  z-index: 10;
+  pointer-events: none;
+  opacity: 0.8;
+}
