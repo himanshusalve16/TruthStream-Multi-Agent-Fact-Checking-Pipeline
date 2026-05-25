@@ -309,12 +309,14 @@ PENDING → PROCESSING → COMPLETE
 Extractor (sequential)
      │
      ├──► Source Finder × N claims (parallel, asyncio.gather, max 5 concurrent)
+     │      (Standard/Fast paths: Crawler/Scraper Bypassed; Snippets ranked via Lexical Reranker)
+     │      (Deep path: Full crawling active)
      ├──► Bias Scorer (parallel with Source Finder)
      │
-     └── (both complete) ──► Judge Agent (sequential, has all data)
+     └── (both complete) ──► Judge Agent (sequential, runs single-pass jury synthesis)
 ```
 
-Implemented in FastAPI using `asyncio.gather` for parallelism. No LangChain agent loop needed — this is a DAG, not a ReAct loop. Use plain Python async orchestration.
+Implemented in FastAPI using `asyncio.gather` for parallelism. No LangChain agent loop needed — this is a DAG, not a ReAct loop. Use plain Python async orchestration. Fast path operates as a single structured prompt in `fast.py`, bypassing separate crawler and judge nodes.
 
 ---
 
@@ -521,6 +523,19 @@ Requires no auth (publicly accessible during dev prototype phase)
   "claims_count": 7,
   "verdict": "MOSTLY_TRUE",
   "overall_confidence": 0.74
+}
+```
+
+#### `POST /api/jobs/{job_id}/cancel`
+Cancels an active fact-checking job cooperatively.
+```json
+// Response 200
+{
+  "job_id": "uuid",
+  "status": "FAILED",
+  "created_at": "...",
+  "updated_at": "...",
+  "error_message": "Cancelled by user"
 }
 ```
 

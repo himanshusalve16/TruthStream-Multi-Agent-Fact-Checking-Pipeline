@@ -188,12 +188,22 @@ async def route_and_execute_pipeline(job_id: str, redis: aioredis.Redis, pool, h
 
     # Fetch job from DB with retry to handle transaction race conditions
     job = None
+    db_fetch_start = time.perf_counter()
     for attempt in range(5):
-        job = await queries.get_job(pool, job_id)
-        if job:
-            break
-        logger.warning("Job %s not found in DB (attempt %d/5). Retrying in 0.5s...", job_id, attempt + 1)
-        await asyncio.sleep(0.5)
+        try:
+            job = await queries.get_job(pool, job_id)
+            if job:
+                break
+        except Exception as e:
+            logger.warning("Job %s DB fetch attempt %d/5 failed: %s", job_id, attempt + 1, e)
+        if not job and attempt < 4:
+            logger.warning("Job %s not found in DB (attempt %d/5). Retrying in 0.5s...", job_id, attempt + 1)
+            await asyncio.sleep(0.5)
+    
+    db_fetch_duration = time.perf_counter() - db_fetch_start
+    logger.info("[INSTRUMENTATION] Job %s DB_FETCH_COMPLETED | Duration: %.3fs", job_id, db_fetch_duration)
+    await log_lifecycle_async(pool, job_id, "DB_FETCH_COMPLETED", 
+        details={"duration_ms": round(db_fetch_duration * 1000), "attempts": attempt + 1})
 
     if not job:
         logger.error("Job %s not found in DB after 5 attempts", job_id)
@@ -226,7 +236,14 @@ async def route_and_execute_pipeline(job_id: str, redis: aioredis.Redis, pool, h
 
     # Check for caching/reuse: duplicate URL fact-checked previously
     if url_hash:
+        cache_check_start = time.perf_counter()
         cached_article = await queries.find_article_by_url_hash(pool, url_hash)
+        cache_check_duration = time.perf_counter() - cache_check_start
+        logger.info("[INSTRUMENTATION] Job %s CACHE_CHECK_COMPLETED | Duration: %.3fs | Found: %s", 
+            job_id, cache_check_duration, cached_article is not None)
+        await log_lifecycle_async(pool, job_id, "CACHE_CHECK_COMPLETED",
+            details={"duration_ms": round(cache_check_duration * 1000), "hit": cached_article is not None})
+        
         if cached_article:
             async with pool.acquire() as conn:
                 completed_job_row = await conn.fetchrow(
@@ -266,10 +283,15 @@ async def route_and_execute_pipeline(job_id: str, redis: aioredis.Redis, pool, h
                 # 8s Timeout for URL fetching
                 raw_text, _ = await asyncio.wait_for(fetch_article_url(input_url, http_client), timeout=8.0)
                 fetch_time = time.perf_counter() - fetch_start
+                logger.info("[INSTRUMENTATION] Job %s URL_FETCH_COMPLETED | Duration: %.3fs", job_id, fetch_time)
+                await log_lifecycle_async(pool, job_id, "URL_FETCH_COMPLETED",
+                    details={"duration_ms": round(fetch_time * 1000)})
             except asyncio.TimeoutError:
+                logger.error("[INSTRUMENTATION] Job %s URL_FETCH_TIMEOUT | Duration: 8.000s", job_id)
                 await _fail_job(pool, redis, job_id, "Article fetch timed out (8s limit).")
                 return
             except Exception as e:
+                logger.error("[INSTRUMENTATION] Job %s URL_FETCH_FAILED | Error: %s", job_id, e)
                 await _fail_job(pool, redis, job_id, f"Could not fetch article: {e}")
                 return
     else:
@@ -280,12 +302,31 @@ async def route_and_execute_pipeline(job_id: str, redis: aioredis.Redis, pool, h
             await _fail_job(pool, redis, job_id, "Article content too short or inaccessible.")
             return
         await publish_status(redis, job_id, "extracting", "Parsing and cleaning text content...")
-        cleaned = clean_text(raw_text)
+        
+        # Phase 4: Make text cleaning async to avoid event loop blocking
+        text_clean_start = time.perf_counter()
+        cleaned = await asyncio.to_thread(clean_text, raw_text)
+        text_clean_duration = time.perf_counter() - text_clean_start
+        if text_clean_duration > 0.1:
+            logger.warning("[INSTRUMENTATION] Job %s TEXT_CLEAN_SLOW | Duration: %.3fs (potential event loop blocking)", 
+                job_id, text_clean_duration)
+        else:
+            logger.info("[INSTRUMENTATION] Job %s TEXT_CLEAN_COMPLETED | Duration: %.3fs", job_id, text_clean_duration)
+        await log_lifecycle_async(pool, job_id, "TEXT_CLEAN_COMPLETED",
+            details={"duration_ms": round(text_clean_duration * 1000)})
     
     # State transition: routing
     await publish_status(redis, job_id, "routing", "Classifying article complexity...")
+    
+    # INSTRUMENTATION: Measure complexity classification (also async)
+    complexity_start = time.perf_counter()
     wc = word_count(cleaned)
-    complexity = classify_article_complexity(cleaned)
+    complexity = await asyncio.to_thread(classify_article_complexity, cleaned)
+    complexity_duration = time.perf_counter() - complexity_start
+    logger.info("[INSTRUMENTATION] Job %s COMPLEXITY_CLASSIFIED | Duration: %.3fs | Complexity: %s | Words: %d",
+        job_id, complexity_duration, complexity, wc)
+    await log_lifecycle_async(pool, job_id, "COMPLEXITY_CLASSIFIED",
+        details={"duration_ms": round(complexity_duration * 1000), "complexity": complexity, "word_count": wc})
 
     # Explicit queueing budget check: if queue_time > 15s, downgrade to Fast-Path lightweight processing
     if queue_time > 15.0 and complexity in ("standard", "deep"):
@@ -301,12 +342,20 @@ async def route_and_execute_pipeline(job_id: str, redis: aioredis.Redis, pool, h
     logger.info("Job %s text length: %d words, Complexity: %s", job_id, wc, complexity)
 
     # ── ROUTING PATH ──
+    logger.info("[INSTRUMENTATION] Job %s PIPELINE_ROUTING | Complexity: %s | Words: %d | Path: %s",
+        job_id, complexity, wc, "fast" if complexity == "fast" else "standard" if complexity == "standard" else "deep" if complexity == "deep" else "recovery")
+    await log_lifecycle_async(pool, job_id, "PIPELINE_SELECTED",
+        details={"complexity": complexity, "word_count": wc})
+    
     if complexity == "fast":
+        await publish_status(redis, job_id, "processing", "Running fast-track analysis...")
         await run_fast_path_pipeline_flow(job_id, redis, pool, raw_text, cleaned, wc, url_hash, input_url, user_id, start_time, fetch_time, model_call_time)
     elif complexity == "standard":
+        await publish_status(redis, job_id, "processing", "Running standard analysis...")
         await run_standard_path_pipeline_flow(job_id, redis, pool, raw_text, cleaned, wc, url_hash, input_url, user_id, start_time, fetch_time, model_call_time, http_client)
     elif complexity == "deep":
+        await publish_status(redis, job_id, "processing", "Running deep analysis...")
         await run_deep_path_pipeline_flow(job_id, redis, pool, raw_text, cleaned, wc, url_hash, input_url, user_id, start_time, fetch_time, model_call_time, http_client)
     else:
         # recovery or noisy/broken
-        await run_recovery_pipeline_flow(job_id, redis, pool, raw_text, cleaned, wc, url_hash, input_url, user_id, start_time, fetch_time, model_call_time, f"Classified complexity path: {complexity}")
+        await publish_status(redis, job_id, "processing", "Running recovery analysis...")

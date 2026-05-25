@@ -122,9 +122,28 @@ async def lifespan(app: FastAPI):
     logger.info("[STARTUP] HTTP Client Session warmed and ready.")
 
     logger.info("[STARTUP] Initializing and validating Gemini AI client configuration...")
-    from services.gemini import validate_gemini_model_sync
+    from services.gemini import validate_gemini_model_sync, gemini_manager
     await asyncio.to_thread(validate_gemini_model_sync)
     logger.info("[STARTUP] Gemini AI client validated and ready.")
+    
+    # Phase 2: Prewarm Gemini clients to eliminate cold-start latency
+    logger.info("[STARTUP] Prewarming Gemini API clients (%d keys)...", gemini_manager.get_total_keys())
+    for key_index in range(gemini_manager.get_total_keys()):
+        try:
+            client = gemini_manager.get_client()
+            # Verify client is responsive by listing models
+            await asyncio.to_thread(lambda: list(client.models.list()))
+            logger.info("[STARTUP] Gemini client %d/%d warmed and ready (Key: %s)",
+                key_index + 1, gemini_manager.get_total_keys(), gemini_manager.get_current_key_masked())
+            # Rotate to next key
+            gemini_manager.rotate_key()
+        except Exception as e:
+            logger.warning("[STARTUP] Failed to prewarm Gemini client %d: %s. Continuing with next key...",
+                key_index + 1, e)
+    
+    # Rotate back to first key for actual use
+    gemini_manager._current_index = 0
+    logger.info("[STARTUP] All Gemini clients prewarmed. TLS handshakes and auth validation completed.")
 
     logger.info("[STARTUP] Initializing pipeline routing engine...")
     # Pipeline router components imported and loaded
@@ -179,6 +198,10 @@ app = FastAPI(
 )
 
 app.include_router(internal.router, prefix="/internal")
+
+# Phase 5: Include observability router for metrics and health
+from routers import observability
+app.include_router(observability.router, prefix="/observability")
 
 
 @app.get("/health")
