@@ -33,8 +33,8 @@ export default function JobPage() {
   const streamEnabled = useJobHydration(id)
   useJobStream(streamEnabled ? (id ?? null) : null)
 
-  const isComplete = state.stage === 'complete'
-  const isError = state.stage === 'error'
+  const isComplete = state.stage === 'complete' || state.stage === 'completed' || state.stage === 'partial_completed'
+  const isError = state.stage === 'error' || state.stage === 'failed'
   const hasVerdict = !!state.verdict
   const claimVerdicts = state.verdict?.claim_verdicts ?? []
 
@@ -53,6 +53,13 @@ export default function JobPage() {
     switch(state.stage) {
       case 'queued': return 'Queued'
       case 'accepted': return 'Accepted'
+      case 'routing': return 'Routing Pipeline'
+      case 'fetching': return 'Fetching Article'
+      case 'extracting': return 'Extracting Content'
+      case 'parsing_claims': return 'Extracting Claims'
+      case 'verifying_sources': return 'Sourcing Evidence'
+      case 'reasoning': return 'Judging Veracity'
+      case 'generating_verdict': return 'Generating Verdict'
       case 'spawning_agents': return 'Spawning Agents'
       case 'fetching_article': return 'Fetching Article'
       case 'extracting_content': return 'Extracting Content'

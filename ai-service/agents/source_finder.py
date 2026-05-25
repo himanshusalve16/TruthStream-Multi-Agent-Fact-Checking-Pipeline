@@ -38,6 +38,8 @@ MAX_CONCURRENT_SCRAPES = 5
 async def find_sources(
         claim: ClaimSchema,
         redis=None,
+        max_sources: int = 3,
+        http_client = None,
 ) -> ClaimSourcesResult:
     """
     For a single claim: search → scrape → classify stance.
@@ -46,8 +48,8 @@ async def find_sources(
     query = build_claim_query(claim.text, claim.claim_type)
     results = await search_web(query, max_results=10, redis=redis)
 
-    # Filter to top MAX_SOURCES + 2 by quality before scraping
-    top_results = results[:MAX_SOURCES + 2]  # scrape extra to compensate for failures
+    # Filter to top max_sources + 2 by quality before scraping
+    top_results = results[:max_sources + 2]  # scrape extra to compensate for failures
 
     # Scrape in parallel
     sem = asyncio.Semaphore(MAX_CONCURRENT_SCRAPES)
@@ -56,7 +58,7 @@ async def find_sources(
         async with sem:
             url = result["url"]
             domain = extract_domain(url) or url
-            full_text, fetch_status = await scrape_url(url, redis=redis)
+            full_text, fetch_status = await scrape_url(url, redis=redis, http_client=http_client)
             quality = score_source(
                 domain=domain,
                 url=url,
@@ -85,7 +87,7 @@ async def find_sources(
         if isinstance(s, dict) and s.get("fetch_status") not in ("ssrf_blocked", "error")
     ]
     valid.sort(key=lambda x: x.get("quality_score", 0), reverse=True)
-    selected = valid[:MAX_SOURCES]
+    selected = valid[:max_sources]
 
     if not selected:
         return ClaimSourcesResult(claim_id=claim.claim_id or "", sources=[])

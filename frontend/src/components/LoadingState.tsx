@@ -11,16 +11,50 @@ import {
 import type { Stage } from '../context/JobContext'
 
 const STAGES: { key: Stage; label: string; icon: React.ReactNode; color: string; description: string }[] = [
-  { key: 'fetching_article',  label: 'Parser Node',      icon: <Globe size={15} />, color: '#818cf8', description: 'Downloads & cleans target content' },
-  { key: 'extracting_claims', label: 'Claim Extractor',  icon: <Search size={15} />, color: '#c084fc', description: 'Isolates verifiable claims' },
-  { key: 'sourcing_claims',   label: 'Sourcing Crawler', icon: <TerminalIcon size={15} />, color: '#38bdf8', description: 'Crawls web indices & stance' },
-  { key: 'judging',           label: 'Veracity Judge',    icon: <Scale size={15} />, color: '#a855f7', description: 'Synthesizes final verdict' },
-  { key: 'complete',          label: 'Synthesized Output',icon: <CheckCircle size={15} />, color: '#34d399', description: 'Results published' },
+  { key: 'fetching',          label: 'Parser Node',      icon: <Globe size={15} />, color: '#818cf8', description: 'Downloads & cleans target content' },
+  { key: 'parsing_claims',    label: 'Claim Extractor',  icon: <Search size={15} />, color: '#c084fc', description: 'Isolates verifiable claims' },
+  { key: 'verifying_sources', label: 'Sourcing Crawler', icon: <TerminalIcon size={15} />, color: '#38bdf8', description: 'Crawls web indices & stance' },
+  { key: 'reasoning',         label: 'Veracity Judge',    icon: <Scale size={15} />, color: '#a855f7', description: 'Synthesizes final verdict' },
+  { key: 'completed',         label: 'Synthesized Output',icon: <CheckCircle size={15} />, color: '#34d399', description: 'Results published' },
 ]
 
 const STAGE_ORDER: Stage[] = [
-  'queued', 'accepted', 'spawning_agents', 'fetching_article', 'extracting_content', 'extracting_claims', 'sourcing_claims', 'judging', 'finalizing', 'complete'
+  'queued',
+  'accepted',
+  'routing',
+  'fetching',
+  'extracting',
+  'parsing_claims',
+  'verifying_sources',
+  'reasoning',
+  'generating_verdict',
+  'completed'
 ]
+
+const stageMapping: Record<Stage, Stage> = {
+  idle: 'queued',
+  queued: 'queued',
+  accepted: 'accepted',
+  spawning_agents: 'routing',
+  routing: 'routing',
+  fetching_article: 'fetching',
+  fetching: 'fetching',
+  extracting_content: 'extracting',
+  extracting: 'extracting',
+  extracting_claims: 'parsing_claims',
+  parsing_claims: 'parsing_claims',
+  sourcing_claims: 'verifying_sources',
+  verifying_sources: 'verifying_sources',
+  judging: 'reasoning',
+  reasoning: 'reasoning',
+  finalizing: 'generating_verdict',
+  generating_verdict: 'generating_verdict',
+  complete: 'completed',
+  completed: 'completed',
+  partial_completed: 'completed',
+  error: 'completed',
+  failed: 'completed'
+}
 
 const SUBSTAGE_LOGS: Record<Stage, string[]> = {
   queued: [
@@ -33,51 +67,60 @@ const SUBSTAGE_LOGS: Record<Stage, string[]> = {
     'Establishing secure execution context...',
     'Worker resources ready.'
   ],
-  spawning_agents: [
-    'Spawning fact-checking agent pool...',
-    'Pre-warming Google Gemini API models...',
-    'Agents spawned successfully.'
+  routing: [
+    'Classifying article features...',
+    'Determining pipeline route based on heuristics...',
+    'Routing to target execution path.'
   ],
-  fetching_article: [
+  fetching: [
     'Connecting to target web host...',
-    'Bypassing Paywalls & Content Scrapers...',
-    'Extracting raw article body content...'
+    'Extracting raw content...',
+    'Content fetched successfully.'
   ],
-  extracting_content: [
+  extracting: [
     'Sanitizing raw HTML input tags...',
     'Cleaned content body parsed successfully.',
     'Checking text length & complexity metrics...'
   ],
-  extracting_claims: [
+  parsing_claims: [
     'Initializing Claim Extractor Agent...',
-    'Tokenizing input texts & parsing syntax...',
     'Isolating checkable factual claims...'
   ],
-  sourcing_claims: [
+  verifying_sources: [
     'Deploying Search Agent network...',
-    'Querying semantic news indices...',
     'Scraping corroborating source links...'
   ],
-  judging: [
+  reasoning: [
     'Spawning Bias Analyst Agent...',
-    'Scoring framing bias & loaded language...',
     'Cross-referencing stances with veracity judge...'
   ],
-  finalizing: [
-    'Writing final consensus matrix to database...',
-    'Broadcasting terminal event stream...',
+  generating_verdict: [
+    'Synthesizing consensus matrix...',
+    'Persisting overall and individual claim verdicts...',
     'Done.'
   ],
-  complete: [
+  completed: [
     'Pipeline complete.',
     'Verdicts verified & persisted.'
   ],
-  error: [
+  partial_completed: [
+    'Pipeline completed with partial analysis.',
+    'Certain verification stages skipped or fallback triggered.'
+  ],
+  failed: [
     'Pipeline terminated with error.'
   ],
-  idle: [
-    'Pipeline idle.'
-  ]
+  // backward compatibility
+  idle: ['Pipeline idle.'],
+  spawning_agents: ['Spawning fact-checking agent pool...'],
+  fetching_article: ['Fetching target article content...'],
+  extracting_content: ['Parsing and cleaning text content...'],
+  extracting_claims: ['Analyzing article for claims...'],
+  sourcing_claims: ['Finding sources for each claim...'],
+  judging: ['Synthesizing final verdict...'],
+  finalizing: ['Saving final verdicts...'],
+  complete: ['Pipeline complete.'],
+  error: ['Pipeline terminated with error.']
 }
 
 interface Props {
@@ -86,7 +129,10 @@ interface Props {
 }
 
 export default function LoadingState({ stage, message }: Props) {
-  const currentIdx = STAGE_ORDER.indexOf(stage)
+  const normalizedStage = stageMapping[stage] || stage
+  const currentIdx = STAGE_ORDER.indexOf(normalizedStage)
+  const isTerminalState = stage === 'complete' || stage === 'completed' || stage === 'partial_completed' || stage === 'failed' || stage === 'error'
+
   const [logs, setLogs] = useState<string[]>([])
   const [currentLogIdx, setCurrentLogIdx] = useState(0)
   const [stageTimer, setStageTimer] = useState(0)
@@ -99,7 +145,7 @@ export default function LoadingState({ stage, message }: Props) {
 
   // Count seconds elapsed for live indicators
   useEffect(() => {
-    if (stage === 'complete' || stage === 'error' || stage === 'idle') return
+    if (isTerminalState || stage === 'idle') return
 
     const interval = setInterval(() => {
       setStageTimer(prev => prev + 1)
@@ -107,7 +153,7 @@ export default function LoadingState({ stage, message }: Props) {
     }, 1000)
 
     return () => clearInterval(interval)
-  }, [stage])
+  }, [stage, isTerminalState])
 
   // Append new logs corresponding to the current stage
   useEffect(() => {
@@ -132,11 +178,11 @@ export default function LoadingState({ stage, message }: Props) {
   }, [stage, currentLogIdx])
 
   const nodes = [
-    { name: 'Parser', x: 60,   y: 60, stages: ['fetching_article', 'extracting_content'], color: '#818cf8' },
-    { name: 'Extractor', x: 200,  y: 60, stages: ['extracting_claims'], color: '#c084fc' },
-    { name: 'Crawler', x: 340,  y: 60, stages: ['sourcing_claims'],   color: '#38bdf8' },
-    { name: 'Judge', x: 480,  y: 60, stages: ['judging', 'finalizing'], color: '#a855f7' },
-    { name: 'Output', x: 620,  y: 60, stages: ['complete'],          color: '#34d399' },
+    { name: 'Parser', x: 60,   y: 60, stages: ['fetching', 'extracting'], color: '#818cf8' },
+    { name: 'Extractor', x: 200,  y: 60, stages: ['parsing_claims'], color: '#c084fc' },
+    { name: 'Crawler', x: 340,  y: 60, stages: ['verifying_sources'],   color: '#38bdf8' },
+    { name: 'Judge', x: 480,  y: 60, stages: ['reasoning', 'generating_verdict'], color: '#a855f7' },
+    { name: 'Output', x: 620,  y: 60, stages: ['completed'],          color: '#34d399' },
   ]
 
   // Formats system log tags with color-coding
@@ -182,8 +228,8 @@ export default function LoadingState({ stage, message }: Props) {
           </div>
           <div className="flex items-center gap-4 text-[10px] text-text-muted font-mono bg-slate-950/80 px-3 py-1.5 rounded-lg border border-white/[0.04]">
             <div className="flex items-center gap-1.5">
-              <span className={`w-1.5 h-1.5 rounded-full bg-emerald-500 ${stage !== 'complete' ? 'animate-ping' : ''}`} />
-              <span>DIAG: {stage === 'complete' ? 'COMPLETE' : 'ONLINE'}</span>
+              <span className={`w-1.5 h-1.5 rounded-full bg-emerald-500 ${!isTerminalState ? 'animate-ping' : ''}`} />
+              <span>DIAG: {isTerminalState ? 'COMPLETE' : 'ONLINE'}</span>
             </div>
             <div>ELAPSED: {totalTimer}s</div>
           </div>
@@ -208,7 +254,7 @@ export default function LoadingState({ stage, message }: Props) {
               const nextNode = nodes[idx + 1]
               const maxCurrentNodeStageIdx = Math.max(...node.stages.map(s => STAGE_ORDER.indexOf(s as Stage)))
               const isPassed = currentIdx > maxCurrentNodeStageIdx
-              const isActive = node.stages.includes(stage)
+              const isActive = node.stages.includes(normalizedStage)
               
               return (
                 <path
@@ -226,8 +272,8 @@ export default function LoadingState({ stage, message }: Props) {
             {nodes.map((node) => {
               const stageIdxs = node.stages.map(s => STAGE_ORDER.indexOf(s as Stage))
               const maxStageIdx = Math.max(...stageIdxs)
-              const isFinished = currentIdx > maxStageIdx || (stage === 'complete' && node.stages.includes('complete'))
-              const isActive = node.stages.includes(stage)
+              const isFinished = currentIdx > maxStageIdx || (isTerminalState && node.stages.includes('completed'))
+              const isActive = node.stages.includes(normalizedStage)
 
               const activeColor = node.color
               
@@ -287,14 +333,14 @@ export default function LoadingState({ stage, message }: Props) {
           <div className="flex flex-col">
             <span className="text-[9px] text-text-muted font-bold tracking-wider uppercase">Active Stage</span>
             <span className="text-xs font-bold text-white font-mono flex items-center gap-1.5 mt-0.5">
-              <span className={`w-1.5 h-1.5 rounded-full ${stage === 'complete' ? 'bg-emerald-500' : 'bg-indigo-500 animate-pulse'}`} />
+              <span className={`w-1.5 h-1.5 rounded-full ${isTerminalState ? 'bg-emerald-500' : 'bg-indigo-500 animate-pulse'}`} />
               <span className="capitalize">{stage.replace('_', ' ')}</span>
             </span>
           </div>
           <div className="flex flex-col">
             <span className="text-[9px] text-text-muted font-bold tracking-wider uppercase">Stage Timer</span>
             <span className="text-xs font-bold text-white font-mono mt-0.5">
-              {stage === 'complete' ? '0.0s' : `${stageTimer}s`}
+              {isTerminalState ? '0.0s' : `${stageTimer}s`}
             </span>
           </div>
           <div className="flex flex-col">
@@ -304,7 +350,7 @@ export default function LoadingState({ stage, message }: Props) {
           <div className="flex flex-col">
             <span className="text-[9px] text-text-muted font-bold tracking-wider uppercase">Active Claim ID</span>
             <span className="text-xs font-bold text-white font-mono mt-0.5 truncate">
-              {stage === 'complete' ? 'none' : 'claim_idx_0' + (currentIdx + 1)}
+              {isTerminalState ? 'none' : 'claim_idx_0' + (currentIdx + 1)}
             </span>
           </div>
         </div>
@@ -318,7 +364,7 @@ export default function LoadingState({ stage, message }: Props) {
           </label>
           <div className="flex items-center gap-2">
             <span className="text-[9px] font-mono text-text-muted">stdout // stream-event</span>
-            <div className={`w-2 h-2 rounded-full bg-indigo-500 ${stage !== 'complete' ? 'animate-pulse' : ''}`} />
+            <div className={`w-2 h-2 rounded-full bg-indigo-500 ${!isTerminalState ? 'animate-pulse' : ''}`} />
           </div>
         </div>
         
@@ -339,7 +385,7 @@ export default function LoadingState({ stage, message }: Props) {
             ))}
             
             {/* Blinking block terminal cursor */}
-            {stage !== 'complete' && stage !== 'error' && (
+            {!isTerminalState && (
               <div className="flex items-center gap-1 mt-1 font-bold text-accent">
                 <span>[pipeline] &gt; {message || 'awaiting consensus...'}</span>
                 <span className="terminal-cursor" />
@@ -350,7 +396,7 @@ export default function LoadingState({ stage, message }: Props) {
       </div>
 
       {/* Modern Shimmering Skeleton Loader */}
-      {stage !== 'complete' && stage !== 'error' && (
+      {!isTerminalState && (
         <div className="glass-card p-6 border border-border bg-bg-glass backdrop-blur-xl rounded-2xl shadow-card">
           <div className="flex justify-between items-center mb-4">
             <div className="h-4 w-28 skeleton" />

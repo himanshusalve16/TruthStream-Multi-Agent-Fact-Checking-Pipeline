@@ -70,17 +70,37 @@ public class JobService {
         job = jobRepository.save(job);
         rateLimitService.recordJobSubmission(userId);
 
-        // Dispatch to FastAPI asynchronously
+        // Dispatch to FastAPI asynchronously after transaction commits to prevent race conditions
         final UUID jobId = job.getId();
-        fastApiClient.dispatchJob(
-                jobId, userId,
-                request.getInputType(),
-                request.getUrl(),
-                request.getText()
-        );
+        final JobResponse response = toJobResponse(job);
+
+        if (org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive()) {
+            org.springframework.transaction.support.TransactionSynchronizationManager.registerSynchronization(
+                new org.springframework.transaction.support.TransactionSynchronization() {
+                    @Override
+                    public void afterCommit() {
+                        log.info("Transaction committed. Dispatching job {} to FastAPI...", jobId);
+                        fastApiClient.dispatchJob(
+                                jobId, userId,
+                                request.getInputType(),
+                                request.getUrl(),
+                                request.getText()
+                        );
+                    }
+                }
+            );
+        } else {
+            log.info("No active transaction. Dispatching job {} to FastAPI immediately...", jobId);
+            fastApiClient.dispatchJob(
+                    jobId, userId,
+                    request.getInputType(),
+                    request.getUrl(),
+                    request.getText()
+            );
+        }
 
         log.info("Created job {} for user {}", jobId, userId);
-        return toJobResponse(job);
+        return response;
     }
 
     public JobResponse getJob(UUID jobId, UUID userId) {

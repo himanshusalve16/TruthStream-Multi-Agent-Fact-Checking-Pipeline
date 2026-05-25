@@ -139,6 +139,55 @@ async def cleanup_stuck_jobs(pool) -> None:
         logger.error("Startup watchdog: failed to clean up stuck jobs: %s", e)
 
 
+async def log_lifecycle_async(pool, job_id: str, action: str, start_time: float = None, details: dict = None, user_id: str = None) -> None:
+    import json
+    elapsed = 0.0
+    if start_time is not None:
+        elapsed = time.perf_counter() - start_time
+    details_dict = details or {}
+    details_dict["elapsed_seconds"] = elapsed
+    logger.info(
+        "[LIFECYCLE] [JOB_ID: %s] [ACTION: %s] [ELAPSED: %.3fs] %s",
+        job_id, action, elapsed, json.dumps(details_dict)
+    )
+    try:
+        await queries.insert_audit_log(pool, job_id, user_id, action, details_dict)
+    except Exception as e:
+        logger.warning("Failed to insert lifecycle audit log for %s: %s", action, e)
+
+
+async def stalled_jobs_watchdog(app: FastAPI):
+    """Background watchdog to detect and resolve stalled jobs."""
+    pool = app.state.db_pool
+    redis = app.state.redis
+    logger.info("Stalled jobs watchdog started")
+    while True:
+        try:
+            await asyncio.sleep(15)
+            async with pool.acquire() as conn:
+                # Find jobs stuck in PENDING or PROCESSING for more than 45 seconds
+                stuck_rows = await conn.fetch(
+                    """
+                    SELECT id, status, created_at, updated_at 
+                    FROM jobs 
+                    WHERE status IN ('PENDING', 'PROCESSING') 
+                      AND (NOW() - COALESCE(updated_at, created_at)) > INTERVAL '45 seconds'
+                    """
+                )
+                for row in stuck_rows:
+                    job_id = str(row["id"])
+                    status = row["status"]
+                    logger.warning("[WATCHDOG] Job %s has been stuck in %s for too long. Forcing cleanup.", job_id, status)
+                    await _fail_job(
+                        pool, redis, job_id, 
+                        f"Job processing stalled in {status} stage (45s timeout exceeded). Pipeline aborted."
+                    )
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.error("Error in stalled jobs watchdog: %s", e)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # ── Startup ──────────────────────────────────────────────
@@ -155,9 +204,21 @@ async def lifespan(app: FastAPI):
     logger.info("Connecting to Redis...")
     app.state.redis = await _connect_redis_with_retry(settings.redis_url)
 
+    logger.info("Prewarming HTTP Client Session...")
+    import httpx
+    app.state.http_client = httpx.AsyncClient(
+        timeout=10.0,
+        headers={"User-Agent": "TruthStream-Bot/1.0 (+https://truthstream.app/bot)"},
+        follow_redirects=True,
+        max_redirects=3,
+    )
+
     logger.info("Validating AI Provider Configuration...")
     from services.gemini import validate_gemini_model_sync
     await asyncio.to_thread(validate_gemini_model_sync)
+
+    logger.info("Starting background stalled jobs watchdog...")
+    app.state.watchdog_task = asyncio.create_task(stalled_jobs_watchdog(app))
 
     logger.info("Starting %d job workers...", NUM_WORKERS)
     app.state.workers = [
@@ -174,6 +235,11 @@ async def lifespan(app: FastAPI):
         w.cancel()
     await asyncio.gather(*app.state.workers, return_exceptions=True)
 
+    logger.info("Shutting down watchdog task...")
+    app.state.watchdog_task.cancel()
+    await asyncio.gather(app.state.watchdog_task, return_exceptions=True)
+
+    await app.state.http_client.aclose()
     await close_db_pool(app.state.db_pool)
     await app.state.redis.aclose()
     logger.info("AI service stopped.")
@@ -198,10 +264,19 @@ async def health():
 # Worker loop
 # ──────────────────────────────────────────────────────────────
 
+MAX_CONCURRENT_JOBS = 5
+concurrency_semaphore = asyncio.Semaphore(MAX_CONCURRENT_JOBS)
+
+async def run_job_with_semaphore(job_id: str, redis: aioredis.Redis, pool, http_client, worker_name: str):
+    async with concurrency_semaphore:
+        await log_lifecycle_async(pool, job_id, "TASK_DISPATCHED", details={"worker": worker_name})
+        await process_job(job_id, redis, pool, http_client)
+
 async def job_worker(app: FastAPI):
-    """BRPOP from job_queue and process each job_id."""
+    """BRPOP from job_queue and process each job_id asynchronously."""
     redis = app.state.redis
     pool = app.state.db_pool
+    http_client = app.state.http_client
     logger.info("Worker started")
 
     while True:
@@ -211,9 +286,16 @@ async def job_worker(app: FastAPI):
                 _, job_id_bytes = result
                 job_id = job_id_bytes.decode()
                 logger.info("Worker picked up job: %s", job_id)
+                
+                worker_name = asyncio.current_task().get_name()
+                await log_lifecycle_async(pool, job_id, "JOB_ACCEPTED", details={"worker": worker_name})
+                await log_lifecycle_async(pool, job_id, "WORKER_ASSIGNED", details={"worker": worker_name})
+                
                 await publish_status(redis, job_id, "accepted", "Job accepted by worker thread...")
                 await publish_status(redis, job_id, "spawning_agents", "Spawning fact-checking agents...")
-                await process_job(job_id, redis, pool)
+                
+                # Dispatch the task asynchronously
+                asyncio.create_task(run_job_with_semaphore(job_id, redis, pool, http_client, worker_name))
         except asyncio.CancelledError:
             logger.info("Worker cancelled")
             break
@@ -253,11 +335,12 @@ async def auto_summarize(text: str) -> str:
         return " ".join(words[:500])
 
 
-async def run_best_effort_verdict(article_text: str, bias_result: BiasResult) -> JudgeResult:
+async def run_best_effort_verdict(article_text: str, bias_result: BiasResult, explanation: str = "") -> JudgeResult:
     """Generate a best-effort overall verdict when claim extraction is unavailable or skipped."""
     user_prompt = (
         "Analyze the following article text and produce a best-effort overall verdict, confidence, and summary "
-        "explaining why individual claims could not be fact-checked (e.g. parsing failed, or text was too complex/unstructured).\n\n"
+        "explaining why individual claims could not be fact-checked (e.g. parsing failed, or text was too complex/unstructured).\n"
+        f"Failure context: {explanation}\n\n"
         f"Article content:\n{article_text[:15000]}"
     )
     from google.genai import types
@@ -514,30 +597,768 @@ async def reuse_completed_job(pool, new_job_id: str, old_job_id: str, article_id
         logger.exception("Failed to clone completed job %s: %s", old_job_id, e)
         return False
 
-async def process_job(job_id: str, redis: aioredis.Redis, pool) -> None:
-    """Full fact-checking pipeline for a single job with global 120s watchdog."""
-    logger.info("Processing job: %s", job_id)
+
+async def run_fast_path_pipeline_flow(
+    job_id: str, redis: aioredis.Redis, pool, raw_text: str, cleaned: str, wc: int,
+    url_hash: str | None, input_url: str | None, user_id: str,
+    start_time: float, fetch_time: float, model_call_time: float
+) -> None:
+    # State transition: parsing_claims
+    await publish_status(redis, job_id, "parsing_claims", "Executing Fast-Path direct single-pass analysis...")
+    await log_lifecycle_async(pool, job_id, "EXTRACTION_STARTED", start_time=start_time, user_id=user_id, details={"path": "fast"})
+
+    # Insert article record
+    article_id = await queries.insert_article(
+        pool,
+        url=input_url,
+        url_hash=url_hash,
+        raw_text=raw_text[:50000],
+        cleaned_text=cleaned,
+        truncated=False,
+        word_count=wc,
+    )
+    await queries.update_job_article(pool, job_id, article_id)
+
     try:
-        # Global 120-second watchdog
-        await asyncio.wait_for(_process_job_inner(job_id, redis, pool), timeout=120.0)
-    except asyncio.TimeoutError:
-        logger.error("Job %s timed out globally (120s limit exceeded)", job_id)
-        await _fail_job(pool, redis, job_id, "Job processing exceeded maximum allowed time (120s limit).")
+        fast_start = time.perf_counter()
+        # 15s budget for unified LLM call
+        fast_result = await asyncio.wait_for(run_fast_path_pipeline(cleaned, input_url), timeout=15.0)
+        model_call_time += (time.perf_counter() - fast_start)
     except Exception as e:
-        logger.exception("Unhandled error processing job %s: %s", job_id, e)
-        await _fail_job(pool, redis, job_id, f"Internal pipeline error: {str(e)[:200]}")
+        logger.warning("Fast-path pipeline failed or timed out: %s. Falling back to Recovery Path.", e)
+        await run_recovery_pipeline_flow(
+            job_id, redis, pool, raw_text, cleaned, wc, url_hash, input_url, user_id,
+            start_time, fetch_time, model_call_time, f"Fast-path failed or timed out: {e}"
+        )
+        return
+
+    # Save bias, claims, verdicts...
+    await publish_status(redis, job_id, "generating_verdict", "Saving fast-path results...")
+    
+    # Save bias
+    bias_data = fast_result.get("bias", {})
+    bias_score = max(0, min(100, int(bias_data.get("bias_score", 50))))
+    bias_direction = bias_data.get("bias_direction", "neutral")
+    framing_flags = bias_data.get("framing_flags", [])
+    loaded_terms = bias_data.get("loaded_terms", [])
+    bias_summary = bias_data.get("summary", "")
+    
+    await queries.insert_bias_result(
+        pool, job_id, article_id,
+        bias_score, bias_direction,
+        framing_flags, loaded_terms, bias_summary
+    )
+    await publish_event(redis, job_id, "bias_scored", {
+        "bias_score": bias_score,
+        "bias_direction": bias_direction,
+        "framing_flags": framing_flags,
+        "loaded_terms": loaded_terms,
+        "summary": bias_summary
+    })
+    
+    # Save claims
+    temp_to_real_id = {}
+    claims_list = []
+    for c in fast_result.get("claims", []):
+        temp_id = c.get("temp_id", "c1")
+        text = c.get("text", "")
+        context_quote = c.get("context_quote", "")
+        claim_type = c.get("claim_type", "event")
+        checkability = c.get("checkability", "medium")
+        
+        claim_id = await queries.insert_claim(
+            pool, job_id, article_id,
+            text, context_quote, claim_type, checkability, None
+        )
+        temp_to_real_id[temp_id] = claim_id
+        claims_list.append({
+            "claim_id": claim_id,
+            "text": text,
+            "claim_type": claim_type,
+            "checkability": checkability
+        })
+        
+    await publish_event(redis, job_id, "claims_extracted", {
+        "claims": claims_list,
+        "extraction_notes": "Fast-path single-stage claim extraction."
+    })
+    
+    # Save verdicts
+    verdict_data = fast_result.get("verdict", {})
+    overall_verdict = verdict_data.get("overall_verdict", "UNVERIFIABLE")
+    overall_confidence = float(verdict_data.get("overall_confidence", 0.5))
+    overall_summary = verdict_data.get("overall_summary", "")
+    
+    mapped_claim_verdicts = []
+    for cv in verdict_data.get("claim_verdicts", []):
+        temp_id = cv.get("temp_id")
+        real_cid = temp_to_real_id.get(temp_id)
+        if real_cid:
+            verdict = cv.get("verdict", "UNVERIFIABLE")
+            confidence = float(cv.get("confidence", 0.5))
+            reasoning = cv.get("reasoning", "")
+            await queries.insert_verdict(
+                pool, job_id, real_cid,
+                verdict, confidence, reasoning, False
+            )
+            mapped_claim_verdicts.append({
+                "claim_id": real_cid,
+                "verdict": verdict,
+                "confidence": confidence,
+                "reasoning": reasoning
+            })
+            
+    await queries.insert_verdict(
+        pool, job_id, None,
+        overall_verdict, overall_confidence, overall_summary, True
+    )
+    
+    await publish_event(redis, job_id, "verdict", {
+        "overall_verdict": overall_verdict,
+        "overall_confidence": overall_confidence,
+        "overall_summary": overall_summary,
+        "claim_verdicts": mapped_claim_verdicts,
+    })
+    
+    await queries.update_job_status(pool, job_id, "COMPLETE")
+    await publish_status(redis, job_id, "completed", "Job successfully analyzed.")
+    await log_lifecycle_async(pool, job_id, "JOB_COMPLETED", start_time=start_time, user_id=user_id, details={
+        "path": "fast",
+        "verdict": overall_verdict
+    })
+    await publish_done(redis, job_id)
+    
+    # Print diagnostics
+    total_time = time.perf_counter() - start_time
+    proc_time = total_time - fetch_time
+    logger.info(
+        "\n[DIAGNOSTICS] Job %s (FAST-PATH) Performance Metrics:\n"
+        "- Fetch Time: %.3fs\n"
+        "- Model Call Time: %.3fs\n"
+        "- Processing Time: %.3fs\n"
+        "- Total Job Time: %.3fs\n",
+        job_id, fetch_time, model_call_time, proc_time, total_time
+    )
 
 
-async def _process_job_inner(job_id: str, redis: aioredis.Redis, pool) -> None:
+async def run_standard_path_pipeline_flow(
+    job_id: str, redis: aioredis.Redis, pool, raw_text: str, cleaned: str, wc: int,
+    url_hash: str | None, input_url: str | None, user_id: str,
+    start_time: float, fetch_time: float, model_call_time: float, http_client
+) -> None:
+    # State transition: parsing_claims
+    await publish_status(redis, job_id, "parsing_claims", "Extracting claims (Standard Path)...")
+    await log_lifecycle_async(pool, job_id, "EXTRACTION_STARTED", start_time=start_time, user_id=user_id, details={"path": "standard"})
+
+    # Insert article
+    article_id = await queries.insert_article(
+        pool,
+        url=input_url,
+        url_hash=url_hash,
+        raw_text=raw_text[:50000],
+        cleaned_text=cleaned,
+        truncated=False,
+        word_count=wc,
+    )
+    await queries.update_job_article(pool, job_id, article_id)
+
+    # Extract claims
+    claims = []
+    extraction_notes = "Standard path extraction."
+    try:
+        extract_start = time.perf_counter()
+        # 10s Timeout for Claim Extraction
+        extraction_result = await asyncio.wait_for(extract_claims(cleaned, input_url), timeout=10.0)
+        model_call_time += (time.perf_counter() - extract_start)
+        claims = extraction_result.claims
+        extraction_notes = extraction_result.extraction_notes
+        
+        # Cap claims to 3 for standard path
+        if len(claims) > 3:
+            logger.info("Capping claims from %d to 3 for Standard Path.", len(claims))
+            claims = claims[:3]
+    except Exception as e:
+        logger.warning("Claim extraction failed in Standard Path: %s. Falling back to Recovery Path.", e)
+        await run_recovery_pipeline_flow(
+            job_id, redis, pool, raw_text, cleaned, wc, url_hash, input_url, user_id,
+            start_time, fetch_time, model_call_time, f"Claim extraction failed: {e}"
+        )
+        return
+
+    if not claims:
+        logger.warning("No claims found in Standard Path. Falling back to Recovery Path.")
+        await run_recovery_pipeline_flow(
+            job_id, redis, pool, raw_text, cleaned, wc, url_hash, input_url, user_id,
+            start_time, fetch_time, model_call_time, "No claims extracted from text."
+        )
+        return
+
+    # Embed and deduplicate
+    unique_claims = []
+    seen_texts = set()
+    for c in claims:
+        txt_norm = c.text.strip().lower()
+        if txt_norm not in seen_texts:
+            seen_texts.add(txt_norm)
+            unique_claims.append(c)
+    claims = unique_claims
+
+    embeddings = await embed_text_batch([c.text for c in claims])
+    
+    async def process_single_claim(claim: ClaimSchema, emb: list[float]) -> ClaimSchema:
+        if emb:
+            similar = await queries.find_similar_claim(pool, emb)
+            if similar:
+                claim.claim_id = str(similar["id"])
+                return claim
+
+        claim_id = await queries.insert_claim(
+            pool, job_id, article_id,
+            claim.text, claim.context_quote,
+            claim.claim_type, claim.checkability,
+            emb or None,
+        )
+        claim.claim_id = claim_id
+        return claim
+
+    tasks = []
+    for i, claim in enumerate(claims):
+        emb = embeddings[i] if i < len(embeddings) else []
+        tasks.append(process_single_claim(claim, emb))
+
+    inserted_claims = list(await asyncio.gather(*tasks))
+
+    # Publish claims extracted event
+    await publish_event(redis, job_id, "claims_extracted", {
+        "claims": [
+            {
+                "claim_id": c.claim_id,
+                "text": c.text,
+                "claim_type": c.claim_type,
+                "checkability": c.checkability,
+            }
+            for c in inserted_claims
+        ],
+        "extraction_notes": extraction_notes,
+    })
+
+    # State transition: verifying_sources
+    await publish_status(redis, job_id, "verifying_sources", "Crawling sources & analyzing bias (Standard Path)...")
+    await log_lifecycle_async(pool, job_id, "REASONING_STARTED", start_time=start_time, user_id=user_id)
+
+    # Sourcing & Bias analysis in parallel
+    source_results_raw = []
+    bias_result = None
+    try:
+        source_tasks = [find_sources(claim, redis, max_sources=2, http_client=http_client) for claim in inserted_claims]
+        bias_task = score_bias(cleaned, input_url)
+
+        sourcing_start = time.perf_counter()
+        # 15s Timeout for sourcing + bias stages in parallel
+        results = await asyncio.wait_for(
+            asyncio.gather(
+                asyncio.gather(*source_tasks, return_exceptions=True),
+                bias_task,
+                return_exceptions=True,
+            ),
+            timeout=15.0
+        )
+        sourcing_duration = time.perf_counter() - sourcing_start
+        model_call_time += sourcing_duration
+        source_results_raw, bias_result = results
+    except asyncio.TimeoutError:
+        logger.warning("Sourcing/Bias timed out in Standard Path. Falling back to Recovery Path.")
+        await run_recovery_pipeline_flow(
+            job_id, redis, pool, raw_text, cleaned, wc, url_hash, input_url, user_id,
+            start_time, fetch_time, model_call_time, "Sourcing or bias analysis timed out (15s budget)."
+        )
+        return
+
+    # Handle bias failure
+    if isinstance(bias_result, Exception) or bias_result is None:
+        logger.error("Bias scoring failed: %s", bias_result)
+        bias_result = BiasResult(
+            bias_score=50, bias_direction="neutral",
+            framing_flags=[], loaded_terms=[],
+            summary="Bias analysis unavailable."
+        )
+
+    # Insert bias result
+    await queries.insert_bias_result(
+        pool, job_id, article_id,
+        bias_result.bias_score, bias_result.bias_direction,
+        [f.model_dump() for f in bias_result.framing_flags],
+        bias_result.loaded_terms, bias_result.summary,
+    )
+    await publish_event(redis, job_id, "bias_scored", {
+        "bias_score": bias_result.bias_score,
+        "bias_direction": bias_result.bias_direction,
+        "framing_flags": [f.model_dump() for f in bias_result.framing_flags],
+        "loaded_terms": bias_result.loaded_terms,
+        "summary": bias_result.summary,
+    })
+
+    # Process source results
+    sources_by_claim: Dict[str, ClaimSourcesResult] = {}
+    for source_result in (source_results_raw if isinstance(source_results_raw, list) else []):
+        if isinstance(source_result, Exception) or source_result is None:
+            logger.warning("Source finding failed for a claim: %s", source_result)
+            continue
+        cid = source_result.claim_id
+        sources_by_claim[cid] = source_result
+
+        # Insert sources into DB
+        for s in source_result.sources:
+            sid = await queries.insert_source(
+                pool, cid, s.url, s.title, s.domain,
+                s.snippet, s.full_text, s.stance,
+                s.quality_score or 0.0, s.fetch_status or "unknown"
+            )
+            s.source_id = sid
+
+        await publish_event(redis, job_id, "claim_sourced", {
+            "claim_id": cid,
+            "sources": [
+                {
+                    "source_id": s.source_id,
+                    "url": s.url,
+                    "title": s.title,
+                    "domain": s.domain,
+                    "snippet": s.snippet,
+                    "stance": s.stance,
+                    "quality_score": s.quality_score,
+                    "fetch_status": s.fetch_status,
+                }
+                for s in source_result.sources
+            ],
+        })
+
+    # State transition: reasoning / generating_verdict
+    await publish_status(redis, job_id, "reasoning", "Synthesizing final verdict (Standard Path)...")
+    await log_lifecycle_async(pool, job_id, "VERDICT_STARTED", start_time=start_time, user_id=user_id)
+
+    # Judge Agent
+    try:
+        judge_start = time.perf_counter()
+        # 10s Timeout for Judge Agent
+        judge_result = await asyncio.wait_for(
+            run_judge(inserted_claims, sources_by_claim, bias_result, cleaned),
+            timeout=10.0
+        )
+        model_call_time += (time.perf_counter() - judge_start)
+    except Exception as e:
+        logger.warning("Judge agent failed or timed out in Standard Path: %s. Using fallback.", e)
+        judge_result = compute_fallback_verdict(inserted_claims, sources_by_claim, bias_result)
+
+    await publish_status(redis, job_id, "generating_verdict", "Saving final verdicts...")
+
+    # Insert verdicts
+    for cv in judge_result.claim_verdicts:
+        await queries.insert_verdict(
+            pool, job_id, cv.claim_id,
+            cv.verdict, cv.confidence, cv.reasoning, False
+        )
+
+    await queries.insert_verdict(
+        pool, job_id, None,
+        judge_result.overall_verdict, judge_result.overall_confidence,
+        judge_result.overall_summary, True
+    )
+
+    await publish_event(redis, job_id, "verdict", {
+        "overall_verdict": judge_result.overall_verdict,
+        "overall_confidence": judge_result.overall_confidence,
+        "overall_summary": judge_result.overall_summary,
+        "claim_verdicts": [cv.model_dump() for cv in judge_result.claim_verdicts],
+    })
+
+    await queries.update_job_status(pool, job_id, "COMPLETE")
+    await publish_status(redis, job_id, "completed", "Job successfully completed.")
+    await log_lifecycle_async(pool, job_id, "JOB_COMPLETED", start_time=start_time, user_id=user_id, details={
+        "path": "standard",
+        "verdict": judge_result.overall_verdict
+    })
+    await publish_done(redis, job_id)
+
+    # Log diagnostics
+    total_time = time.perf_counter() - start_time
+    proc_time = total_time - fetch_time
+    logger.info(
+        "\n[DIAGNOSTICS] Job %s (STANDARD) Performance Metrics:\n"
+        "- Fetch Time: %.3fs\n"
+        "- Model Call Time: %.3fs\n"
+        "- Processing Time: %.3fs\n"
+        "- Total Job Time: %.3fs\n",
+        job_id, fetch_time, model_call_time, proc_time, total_time
+    )
+
+
+async def run_deep_path_pipeline_flow(
+    job_id: str, redis: aioredis.Redis, pool, raw_text: str, cleaned: str, wc: int,
+    url_hash: str | None, input_url: str | None, user_id: str,
+    start_time: float, fetch_time: float, model_call_time: float, http_client
+) -> None:
+    # State transition: parsing_claims
+    await publish_status(redis, job_id, "parsing_claims", "Extracting claims (Deep Path)...")
+    await log_lifecycle_async(pool, job_id, "EXTRACTION_STARTED", start_time=start_time, user_id=user_id, details={"path": "deep"})
+
+    # Insert article
+    article_id = await queries.insert_article(
+        pool,
+        url=input_url,
+        url_hash=url_hash,
+        raw_text=raw_text[:50000],
+        cleaned_text=cleaned,
+        truncated=False,
+        word_count=wc,
+    )
+    await queries.update_job_article(pool, job_id, article_id)
+
+    # Extract claims
+    claims = []
+    extraction_notes = "Deep path extraction."
+    try:
+        extract_start = time.perf_counter()
+        # 12s Timeout for Claim Extraction
+        extraction_result = await asyncio.wait_for(extract_claims(cleaned, input_url), timeout=12.0)
+        model_call_time += (time.perf_counter() - extract_start)
+        claims = extraction_result.claims
+        extraction_notes = extraction_result.extraction_notes
+        
+        # Cap claims to 5 for deep path
+        if len(claims) > 5:
+            logger.info("Capping claims from %d to 5 for Deep Path.", len(claims))
+            claims = claims[:5]
+    except Exception as e:
+        logger.warning("Claim extraction failed in Deep Path: %s. Falling back to Recovery Path.", e)
+        await run_recovery_pipeline_flow(
+            job_id, redis, pool, raw_text, cleaned, wc, url_hash, input_url, user_id,
+            start_time, fetch_time, model_call_time, f"Claim extraction failed in Deep Path: {e}"
+        )
+        return
+
+    if not claims:
+        logger.warning("No claims found in Deep Path. Falling back to Recovery Path.")
+        await run_recovery_pipeline_flow(
+            job_id, redis, pool, raw_text, cleaned, wc, url_hash, input_url, user_id,
+            start_time, fetch_time, model_call_time, "No claims extracted from text in Deep Path."
+        )
+        return
+
+    # Embed and deduplicate
+    unique_claims = []
+    seen_texts = set()
+    for c in claims:
+        txt_norm = c.text.strip().lower()
+        if txt_norm not in seen_texts:
+            seen_texts.add(txt_norm)
+            unique_claims.append(c)
+    claims = unique_claims
+
+    embeddings = await embed_text_batch([c.text for c in claims])
+    
+    async def process_single_claim(claim: ClaimSchema, emb: list[float]) -> ClaimSchema:
+        if emb:
+            similar = await queries.find_similar_claim(pool, emb)
+            if similar:
+                claim.claim_id = str(similar["id"])
+                return claim
+
+        claim_id = await queries.insert_claim(
+            pool, job_id, article_id,
+            claim.text, claim.context_quote,
+            claim.claim_type, claim.checkability,
+            emb or None,
+        )
+        claim.claim_id = claim_id
+        return claim
+
+    tasks = []
+    for i, claim in enumerate(claims):
+        emb = embeddings[i] if i < len(embeddings) else []
+        tasks.append(process_single_claim(claim, emb))
+
+    inserted_claims = list(await asyncio.gather(*tasks))
+
+    # Publish claims extracted event
+    await publish_event(redis, job_id, "claims_extracted", {
+        "claims": [
+            {
+                "claim_id": c.claim_id,
+                "text": c.text,
+                "claim_type": c.claim_type,
+                "checkability": c.checkability,
+            }
+            for c in inserted_claims
+        ],
+        "extraction_notes": extraction_notes,
+    })
+
+    # State transition: verifying_sources
+    await publish_status(redis, job_id, "verifying_sources", "Crawling sources & analyzing bias (Deep Path)...")
+    await log_lifecycle_async(pool, job_id, "REASONING_STARTED", start_time=start_time, user_id=user_id)
+
+    # Sourcing & Bias analysis in parallel
+    source_results_raw = []
+    bias_result = None
+    try:
+        source_tasks = [find_sources(claim, redis, max_sources=3, http_client=http_client) for claim in inserted_claims]
+        bias_task = score_bias(cleaned, input_url)
+
+        sourcing_start = time.perf_counter()
+        # 25s Timeout for sourcing + bias stages in parallel
+        results = await asyncio.wait_for(
+            asyncio.gather(
+                asyncio.gather(*source_tasks, return_exceptions=True),
+                bias_task,
+                return_exceptions=True,
+            ),
+            timeout=25.0
+        )
+        sourcing_duration = time.perf_counter() - sourcing_start
+        model_call_time += sourcing_duration
+        source_results_raw, bias_result = results
+    except asyncio.TimeoutError:
+        logger.warning("Sourcing/Bias timed out in Deep Path. Falling back to Recovery Path.")
+        await run_recovery_pipeline_flow(
+            job_id, redis, pool, raw_text, cleaned, wc, url_hash, input_url, user_id,
+            start_time, fetch_time, model_call_time, "Sourcing or bias analysis timed out (25s budget)."
+        )
+        return
+
+    # Handle bias failure
+    if isinstance(bias_result, Exception) or bias_result is None:
+        logger.error("Bias scoring failed: %s", bias_result)
+        bias_result = BiasResult(
+            bias_score=50, bias_direction="neutral",
+            framing_flags=[], loaded_terms=[],
+            summary="Bias analysis unavailable."
+        )
+
+    # Insert bias result
+    await queries.insert_bias_result(
+        pool, job_id, article_id,
+        bias_result.bias_score, bias_result.bias_direction,
+        [f.model_dump() for f in bias_result.framing_flags],
+        bias_result.loaded_terms, bias_result.summary,
+    )
+    await publish_event(redis, job_id, "bias_scored", {
+        "bias_score": bias_result.bias_score,
+        "bias_direction": bias_result.bias_direction,
+        "framing_flags": [f.model_dump() for f in bias_result.framing_flags],
+        "loaded_terms": bias_result.loaded_terms,
+        "summary": bias_result.summary,
+    })
+
+    # Process source results
+    sources_by_claim: Dict[str, ClaimSourcesResult] = {}
+    for source_result in (source_results_raw if isinstance(source_results_raw, list) else []):
+        if isinstance(source_result, Exception) or source_result is None:
+            logger.warning("Source finding failed for a claim: %s", source_result)
+            continue
+        cid = source_result.claim_id
+        sources_by_claim[cid] = source_result
+
+        # Insert sources into DB
+        for s in source_result.sources:
+            sid = await queries.insert_source(
+                pool, cid, s.url, s.title, s.domain,
+                s.snippet, s.full_text, s.stance,
+                s.quality_score or 0.0, s.fetch_status or "unknown"
+            )
+            s.source_id = sid
+
+        await publish_event(redis, job_id, "claim_sourced", {
+            "claim_id": cid,
+            "sources": [
+                {
+                    "source_id": s.source_id,
+                    "url": s.url,
+                    "title": s.title,
+                    "domain": s.domain,
+                    "snippet": s.snippet,
+                    "stance": s.stance,
+                    "quality_score": s.quality_score,
+                    "fetch_status": s.fetch_status,
+                }
+                for s in source_result.sources
+            ],
+        })
+
+    # State transition: reasoning / generating_verdict
+    await publish_status(redis, job_id, "reasoning", "Synthesizing final verdict (Deep Path)...")
+    await log_lifecycle_async(pool, job_id, "VERDICT_STARTED", start_time=start_time, user_id=user_id)
+
+    # Judge Agent
+    try:
+        judge_start = time.perf_counter()
+        # 12s Timeout for Judge Agent
+        judge_result = await asyncio.wait_for(
+            run_judge(inserted_claims, sources_by_claim, bias_result, cleaned),
+            timeout=12.0
+        )
+        model_call_time += (time.perf_counter() - judge_start)
+    except Exception as e:
+        logger.warning("Judge agent failed or timed out in Deep Path: %s. Using fallback.", e)
+        judge_result = compute_fallback_verdict(inserted_claims, sources_by_claim, bias_result)
+
+    await publish_status(redis, job_id, "generating_verdict", "Saving final verdicts...")
+
+    # Insert verdicts
+    for cv in judge_result.claim_verdicts:
+        await queries.insert_verdict(
+            pool, job_id, cv.claim_id,
+            cv.verdict, cv.confidence, cv.reasoning, False
+        )
+
+    await queries.insert_verdict(
+        pool, job_id, None,
+        judge_result.overall_verdict, judge_result.overall_confidence,
+        judge_result.overall_summary, True
+    )
+
+    await publish_event(redis, job_id, "verdict", {
+        "overall_verdict": judge_result.overall_verdict,
+        "overall_confidence": judge_result.overall_confidence,
+        "overall_summary": judge_result.overall_summary,
+        "claim_verdicts": [cv.model_dump() for cv in judge_result.claim_verdicts],
+    })
+
+    await queries.update_job_status(pool, job_id, "COMPLETE")
+    await publish_status(redis, job_id, "completed", "Job successfully completed.")
+    await log_lifecycle_async(pool, job_id, "JOB_COMPLETED", start_time=start_time, user_id=user_id, details={
+        "path": "deep",
+        "verdict": judge_result.overall_verdict
+    })
+    await publish_done(redis, job_id)
+
+    # Log diagnostics
+    total_time = time.perf_counter() - start_time
+    proc_time = total_time - fetch_time
+    logger.info(
+        "\n[DIAGNOSTICS] Job %s (DEEP) Performance Metrics:\n"
+        "- Fetch Time: %.3fs\n"
+        "- Model Call Time: %.3fs\n"
+        "- Processing Time: %.3fs\n"
+        "- Total Job Time: %.3fs\n",
+        job_id, fetch_time, model_call_time, proc_time, total_time
+    )
+
+
+async def run_recovery_pipeline_flow(
+    job_id: str, redis: aioredis.Redis, pool, raw_text: str, cleaned: str, wc: int,
+    url_hash: str | None, input_url: str | None, user_id: str,
+    start_time: float, fetch_time: float, model_call_time: float, explanation: str
+) -> None:
+    # State transition: generating_verdict
+    await publish_status(redis, job_id, "generating_verdict", "Executing best-effort recovery analysis...")
+    await log_lifecycle_async(pool, job_id, "EXTRACTION_STARTED", start_time=start_time, user_id=user_id, details={"path": "recovery", "reason": explanation})
+
+    # Insert article if it doesn't exist
+    article_id = await queries.insert_article(
+        pool,
+        url=input_url,
+        url_hash=url_hash,
+        raw_text=raw_text[:50000],
+        cleaned_text=cleaned,
+        truncated=True,
+        word_count=wc,
+    )
+    await queries.update_job_article(pool, job_id, article_id)
+
+    # Score bias (timeout: 10s)
+    try:
+        bias_start = time.perf_counter()
+        bias_result = await asyncio.wait_for(score_bias(cleaned, input_url), timeout=10.0)
+        model_call_time += (time.perf_counter() - bias_start)
+    except Exception as e:
+        logger.error("Bias scoring failed in recovery: %s", e)
+        bias_result = BiasResult(
+            bias_score=50, bias_direction="neutral", framing_flags=[], loaded_terms=[], summary="Bias analysis unavailable."
+        )
+
+    # Insert bias
+    await queries.insert_bias_result(
+        pool, job_id, article_id,
+        bias_result.bias_score, bias_result.bias_direction,
+        [f.model_dump() for f in bias_result.framing_flags],
+        bias_result.loaded_terms, bias_result.summary,
+    )
+    await publish_event(redis, job_id, "bias_scored", {
+        "bias_score": bias_result.bias_score,
+        "bias_direction": bias_result.bias_direction,
+        "framing_flags": [f.model_dump() for f in bias_result.framing_flags],
+        "loaded_terms": bias_result.loaded_terms,
+        "summary": bias_result.summary,
+    })
+
+    # Run best effort verdict (timeout: 10s)
+    try:
+        judge_start = time.perf_counter()
+        judge_result = await asyncio.wait_for(run_best_effort_verdict(cleaned, bias_result, explanation), timeout=10.0)
+        model_call_time += (time.perf_counter() - judge_start)
+    except Exception as e:
+        logger.error("Best effort verdict failed in recovery: %s", e)
+        from models.schemas import JudgeResult
+        judge_result = JudgeResult(
+            overall_verdict="UNVERIFIABLE",
+            overall_confidence=0.1,
+            overall_summary=f"Analysis failed during fallback. Reason: {explanation}",
+            claim_verdicts=[]
+        )
+
+    await queries.insert_verdict(
+        pool, job_id, None,
+        judge_result.overall_verdict, judge_result.overall_confidence,
+        judge_result.overall_summary + f" (Recovery mode active: {explanation})", True
+    )
+
+    await queries.update_job_status(pool, job_id, "PARTIAL")
+    await publish_status(redis, job_id, "partial_completed", "Analysis completed with recovery fallback.")
+
+    await publish_event(redis, job_id, "verdict", {
+        "overall_verdict": judge_result.overall_verdict,
+        "overall_confidence": judge_result.overall_confidence,
+        "overall_summary": judge_result.overall_summary + f" (Recovery mode active: {explanation})",
+        "claim_verdicts": [],
+    })
+    await log_lifecycle_async(pool, job_id, "JOB_COMPLETED", start_time=start_time, user_id=user_id, details={
+        "path": "recovery",
+        "verdict": judge_result.overall_verdict
+    })
+    await publish_done(redis, job_id)
+
+    # Log diagnostics
+    total_time = time.perf_counter() - start_time
+    proc_time = total_time - fetch_time
+    logger.info(
+        "\n[DIAGNOSTICS] Job %s (RECOVERY) Performance Metrics:\n"
+        "- Fetch Time: %.3fs\n"
+        "- Model Call Time: %.3fs\n"
+        "- Processing Time: %.3fs\n"
+        "- Total Job Time: %.3fs\n",
+        job_id, fetch_time, model_call_time, proc_time, total_time
+    )
+
+
+async def _process_job_inner(job_id: str, redis: aioredis.Redis, pool, http_client) -> None:
     """Internal fact-checking pipeline logic with stage timeouts, complexity routing, and caching."""
     start_time = time.perf_counter()
     model_call_time = 0.0
     fetch_time = 0.0
 
-    # Fetch job from DB
-    job = await queries.get_job(pool, job_id)
+    # Fetch job from DB with retry to handle transaction race conditions
+    job = None
+    for attempt in range(5):
+        job = await queries.get_job(pool, job_id)
+        if job:
+            break
+        logger.warning("Job %s not found in DB (attempt %d/5). Retrying in 0.5s...", job_id, attempt + 1)
+        await asyncio.sleep(0.5)
+
     if not job:
-        logger.error("Job %s not found in DB", job_id)
+        logger.error("Job %s not found in DB after 5 attempts", job_id)
+        await _fail_job(pool, redis, job_id, "Job metadata not found in database.")
         return
 
     user_id = str(job["user_id"])
@@ -554,12 +1375,13 @@ async def _process_job_inner(job_id: str, redis: aioredis.Redis, pool) -> None:
             created_at = created_at.replace(tzinfo=datetime.timezone.utc)
         queue_time = (now - created_at).total_seconds()
 
-    await queries.insert_audit_log(pool, job_id, user_id, "JOB_STARTED", {
+    await log_lifecycle_async(pool, job_id, "PIPELINE_STARTED", start_time=start_time, user_id=user_id, details={
         "input_type": "url" if input_url else "text",
         "queue_time": queue_time
     })
     await queries.update_job_status(pool, job_id, "PROCESSING")
-    await publish_status(redis, job_id, "fetching_article", "Fetching article content...")
+    await publish_status(redis, job_id, "fetching", "Fetching article content...")
+    await log_lifecycle_async(pool, job_id, "PARSER_STARTED", start_time=start_time, user_id=user_id)
 
     url_hash = md5_hash(input_url) if input_url else None
     cached_article = None
@@ -604,7 +1426,7 @@ async def _process_job_inner(job_id: str, redis: aioredis.Redis, pool) -> None:
             try:
                 fetch_start = time.perf_counter()
                 # 8s Timeout for URL fetching
-                raw_text, _ = await asyncio.wait_for(fetch_article_url(input_url), timeout=8.0)
+                raw_text, _ = await asyncio.wait_for(fetch_article_url(input_url, http_client), timeout=8.0)
                 fetch_time = time.perf_counter() - fetch_start
             except asyncio.TimeoutError:
                 await _fail_job(pool, redis, job_id, "Article fetch timed out (8s limit).")
@@ -619,17 +1441,19 @@ async def _process_job_inner(job_id: str, redis: aioredis.Redis, pool) -> None:
         if len(raw_text.strip()) < 100:
             await _fail_job(pool, redis, job_id, "Article content too short or inaccessible.")
             return
-        await publish_status(redis, job_id, "extracting_content", "Parsing and cleaning text content...")
+        await publish_status(redis, job_id, "extracting", "Parsing and cleaning text content...")
         cleaned = clean_text(raw_text)
     
+    # State transition: routing
+    await publish_status(redis, job_id, "routing", "Classifying article complexity...")
     wc = word_count(cleaned)
     complexity = classify_article_complexity(cleaned)
 
     # Explicit queueing budget check: if queue_time > 15s, downgrade to Fast-Path lightweight processing
-    if queue_time > 15.0:
+    if queue_time > 15.0 and complexity in ("standard", "deep"):
         logger.warning("Job %s queue time (%.3fs) exceeded budget (15.0s). Forcing Fast-Path mode.", job_id, queue_time)
-        await publish_status(redis, job_id, "spawning_agents", "⚠️ System load high: Switching to lightweight fast-track verification mode...")
-        complexity = "short/simple"
+        await publish_status(redis, job_id, "routing", "⚠️ System load high: Downgrading to fast-track mode...")
+        complexity = "fast"
         words = cleaned.split()
         if len(words) > 600:
             cleaned = " ".join(words[:600])
@@ -638,516 +1462,16 @@ async def _process_job_inner(job_id: str, redis: aioredis.Redis, pool) -> None:
 
     logger.info("Job %s text length: %d words, Complexity: %s", job_id, wc, complexity)
 
-    if complexity == "broken/noisy":
-        await _fail_job(pool, redis, job_id, "Article content is too short, noisy, or empty.")
-        return
-
     # ── ROUTING PATH ──
-    
-    # ── Path A: Fast-Path for Short Articles ──
-    if complexity == "short/simple":
-        await publish_status(redis, job_id, "extracting_claims", "Executing Fast-Path direct analysis...")
-        
-        # Insert article record
-        article_id = await queries.insert_article(
-            pool,
-            url=input_url,
-            url_hash=url_hash,
-            raw_text=raw_text[:50000],
-            cleaned_text=cleaned,
-            truncated=False,
-            word_count=wc,
-        )
-        await queries.update_job_article(pool, job_id, article_id)
-        
-        try:
-            fast_start = time.perf_counter()
-            # 15s budget for unified LLM call
-            fast_result = await asyncio.wait_for(run_fast_path_pipeline(cleaned, input_url), timeout=15.0)
-            model_call_time += (time.perf_counter() - fast_start)
-        except Exception as e:
-            logger.warning("Fast-path pipeline failed or timed out: %s. Falling back to standard pipeline.", e)
-            complexity = "medium"
-
-        if complexity == "short/simple":
-            await publish_status(redis, job_id, "finalizing", "Saving fast-path results...")
-            
-            # Save bias
-            bias_data = fast_result.get("bias", {})
-            bias_score = max(0, min(100, int(bias_data.get("bias_score", 50))))
-            bias_direction = bias_data.get("bias_direction", "neutral")
-            framing_flags = bias_data.get("framing_flags", [])
-            loaded_terms = bias_data.get("loaded_terms", [])
-            bias_summary = bias_data.get("summary", "")
-            
-            await queries.insert_bias_result(
-                pool, job_id, article_id,
-                bias_score, bias_direction,
-                framing_flags, loaded_terms, bias_summary
-            )
-            await publish_event(redis, job_id, "bias_scored", {
-                "bias_score": bias_score,
-                "bias_direction": bias_direction,
-                "framing_flags": framing_flags,
-                "loaded_terms": loaded_terms,
-                "summary": bias_summary
-            })
-            
-            # Save claims
-            temp_to_real_id = {}
-            claims_list = []
-            for c in fast_result.get("claims", []):
-                temp_id = c.get("temp_id", "c1")
-                text = c.get("text", "")
-                context_quote = c.get("context_quote", "")
-                claim_type = c.get("claim_type", "event")
-                checkability = c.get("checkability", "medium")
-                
-                claim_id = await queries.insert_claim(
-                    pool, job_id, article_id,
-                    text, context_quote, claim_type, checkability, None
-                )
-                temp_to_real_id[temp_id] = claim_id
-                claims_list.append({
-                    "claim_id": claim_id,
-                    "text": text,
-                    "claim_type": claim_type,
-                    "checkability": checkability
-                })
-                
-            await publish_event(redis, job_id, "claims_extracted", {
-                "claims": claims_list,
-                "extraction_notes": "Fast-path single-stage claim extraction."
-            })
-            
-            # Save verdicts
-            verdict_data = fast_result.get("verdict", {})
-            overall_verdict = verdict_data.get("overall_verdict", "UNVERIFIABLE")
-            overall_confidence = float(verdict_data.get("overall_confidence", 0.5))
-            overall_summary = verdict_data.get("overall_summary", "")
-            
-            mapped_claim_verdicts = []
-            for cv in verdict_data.get("claim_verdicts", []):
-                temp_id = cv.get("temp_id")
-                real_cid = temp_to_real_id.get(temp_id)
-                if real_cid:
-                    verdict = cv.get("verdict", "UNVERIFIABLE")
-                    confidence = float(cv.get("confidence", 0.5))
-                    reasoning = cv.get("reasoning", "")
-                    await queries.insert_verdict(
-                        pool, job_id, real_cid,
-                        verdict, confidence, reasoning, False
-                    )
-                    mapped_claim_verdicts.append({
-                        "claim_id": real_cid,
-                        "verdict": verdict,
-                        "confidence": confidence,
-                        "reasoning": reasoning
-                    })
-                    
-            await queries.insert_verdict(
-                pool, job_id, None,
-                overall_verdict, overall_confidence, overall_summary, True
-            )
-            
-            await publish_event(redis, job_id, "verdict", {
-                "overall_verdict": overall_verdict,
-                "overall_confidence": overall_confidence,
-                "overall_summary": overall_summary,
-                "claim_verdicts": mapped_claim_verdicts,
-            })
-            
-            await queries.update_job_status(pool, job_id, "COMPLETE")
-            await queries.insert_audit_log(pool, job_id, user_id, "JOB_COMPLETED_FAST_PATH", {
-                "overall_verdict": overall_verdict,
-                "overall_confidence": overall_confidence
-            })
-            await publish_done(redis, job_id)
-            
-            # Print performance metrics
-            end_time = time.perf_counter()
-            total_time = end_time - start_time
-            proc_time = total_time - fetch_time
-            logger.info(
-                "\n[DIAGNOSTICS] Job %s (FAST-PATH) Performance Metrics:\n"
-                "- Queue Time: %.3fs\n"
-                "- Fetch Time: %.3fs\n"
-                "- Model Call Time: %.3fs\n"
-                "- Processing Time: %.3fs\n"
-                "- Total Job Time: %.3fs\n"
-                "- Routing Path: Fast-Path\n",
-                job_id, queue_time, fetch_time, model_call_time, proc_time, total_time
-            )
-            return
-
-    # ── Path B: Standard/Medium/Long Pipeline ──
-    is_fallback_active = False
-    original_cleaned = cleaned
-
-    if complexity == "long/complex":
-        logger.info("Job %s exceeds 1800 words or is long/complex. Auto-summarizing...", job_id)
-        await publish_status(redis, job_id, "extracting_claims", "⚠️ Fallback: Auto-summarizing large article to cap latency...")
-        try:
-            summarize_start = time.perf_counter()
-            # 10s Timeout for summarization stage
-            summary = await asyncio.wait_for(auto_summarize(cleaned), timeout=10.0)
-            model_call_time += (time.perf_counter() - summarize_start)
-            cleaned = summary
-            is_fallback_active = True
-            logger.info("Job %s: Auto-summarization complete. Summary word count: %d", job_id, word_count(cleaned))
-        except Exception as e:
-            logger.warning("Job %s: Auto-summarization failed/timed out: %s. Truncating to 500 words instead.", job_id, e)
-            words = cleaned.split()
-            cleaned = " ".join(words[:500])
-
-    cleaned, truncated = truncate_text(cleaned)
-
-    # Insert article
-    article_id = await queries.insert_article(
-        pool,
-        url=input_url,
-        url_hash=url_hash,
-        raw_text=raw_text[:50000],
-        cleaned_text=cleaned,
-        truncated=truncated or is_fallback_active,
-        word_count=word_count(cleaned),
-    )
-    await queries.update_job_article(pool, job_id, article_id)
-
-    await publish_status(redis, job_id, "extracting_claims", "Analyzing article for claims...")
-
-    # Extract claims
-    claims = []
-    extraction_notes = "Standard extraction."
-    try:
-        extract_start = time.perf_counter()
-        # 10s Timeout for Claim Extraction
-        extraction_result = await asyncio.wait_for(extract_claims(cleaned, input_url), timeout=10.0)
-        model_call_time += (time.perf_counter() - extract_start)
-        claims = extraction_result.claims
-        extraction_notes = extraction_result.extraction_notes
-        
-        # Limit the number of claims based on complexity to speed up downstream stages
-        max_claims = 3 if complexity == "medium" else 4
-        if len(claims) > max_claims:
-            logger.info("Limiting extracted claims from %d to %d (Complexity: %s)", len(claims), max_claims, complexity)
-            claims = claims[:max_claims]
-    except Exception as e:
-        logger.warning("Job %s: Claim extraction failed or timed out (%s). Falling back to Tier 3 overall verdict.", job_id, e)
-        await publish_status(redis, job_id, "judging", "⚠️ Fallback: Claim extraction failed. Generating best-effort verdict...")
-
-    # If claim extraction yielded no claims or failed, run Tier 3 Best-Effort Overall Verdict
-    if not claims:
-        logger.info("Job %s: No claims found or extraction failed. Running best-effort verdict.", job_id)
-        try:
-            bias_start = time.perf_counter()
-            # 10s Timeout for bias scoring
-            bias_result = await asyncio.wait_for(score_bias(cleaned, input_url), timeout=10.0)
-            model_call_time += (time.perf_counter() - bias_start)
-        except Exception as e:
-            logger.error("Job %s: Bias scoring failed/timed out during best-effort path: %s", job_id, e)
-            bias_result = BiasResult(
-                bias_score=50, bias_direction="neutral", framing_flags=[], loaded_terms=[], summary="Bias analysis unavailable."
-            )
-
-        # Save bias
-        await queries.insert_bias_result(
-            pool, job_id, article_id,
-            bias_result.bias_score, bias_result.bias_direction,
-            [f.model_dump() for f in bias_result.framing_flags],
-            bias_result.loaded_terms, bias_result.summary,
-        )
-        await publish_event(redis, job_id, "bias_scored", {
-            "bias_score": bias_result.bias_score,
-            "bias_direction": bias_result.bias_direction,
-            "framing_flags": [f.model_dump() for f in bias_result.framing_flags],
-            "loaded_terms": bias_result.loaded_terms,
-            "summary": bias_result.summary,
-        })
-
-        # Run best-effort overall verdict
-        try:
-            judge_start = time.perf_counter()
-            # 10s Timeout for best-effort verdict
-            judge_result = await asyncio.wait_for(run_best_effort_verdict(cleaned, bias_result), timeout=10.0)
-            model_call_time += (time.perf_counter() - judge_start)
-        except Exception as e:
-            logger.error("Job %s: Best-effort verdict timed out or failed: %s", job_id, e)
-            from models.schemas import JudgeResult
-            judge_result = JudgeResult(
-                overall_verdict="UNVERIFIABLE",
-                overall_confidence=0.1,
-                overall_summary="Verification skipped due to article complexity or processing timeout.",
-                claim_verdicts=[]
-            )
-
-        await publish_status(redis, job_id, "finalizing", "Saving best-effort verdict...")
-
-        await queries.insert_verdict(
-            pool, job_id, None,
-            judge_result.overall_verdict, judge_result.overall_confidence,
-            judge_result.overall_summary + (" (Best-effort verdict generated directly; claim parsing was unavailable.)"), True
-        )
-
-        await queries.update_job_status(pool, job_id, "PARTIAL")
-        await queries.insert_audit_log(pool, job_id, user_id, "JOB_COMPLETED_PARTIAL", {
-            "overall_verdict": judge_result.overall_verdict,
-            "overall_confidence": judge_result.overall_confidence,
-            "reason": "Claim extraction failed or returned no claims."
-        })
-
-        await publish_event(redis, job_id, "verdict", {
-            "overall_verdict": judge_result.overall_verdict,
-            "overall_confidence": judge_result.overall_confidence,
-            "overall_summary": judge_result.overall_summary + " (Best-effort verdict; claim parsing was unavailable.)",
-            "claim_verdicts": [],
-        })
-        await publish_done(redis, job_id)
-        
-        # Log diagnostics
-        end_time = time.perf_counter()
-        total_time = end_time - start_time
-        proc_time = total_time - fetch_time
-        logger.info(
-            "\n[DIAGNOSTICS] Job %s (PARTIAL/BEST-EFFORT) Performance Metrics:\n"
-            "- Queue Time: %.3fs\n"
-            "- Fetch Time: %.3fs\n"
-            "- Model Call Time: %.3fs\n"
-            "- Processing Time: %.3fs\n"
-            "- Total Job Time: %.3fs\n"
-            "- Routing Path: Best-Effort Verdict\n",
-            job_id, queue_time, fetch_time, model_call_time, proc_time, total_time
-        )
-        return
-
-    # ── Embed claims + deduplicate + insert ──
-    unique_claims = []
-    seen_texts = set()
-    for c in claims:
-        txt_norm = c.text.strip().lower()
-        if txt_norm not in seen_texts:
-            seen_texts.add(txt_norm)
-            unique_claims.append(c)
-    claims = unique_claims
-
-    embeddings = await embed_text_batch([c.text for c in claims])
-    
-    async def process_single_claim(claim: ClaimSchema, emb: list[float]) -> ClaimSchema:
-        if emb:
-            similar = await queries.find_similar_claim(pool, emb)
-            if similar:
-                logger.info("Near-duplicate claim found (id=%s), skipping insert", similar["id"])
-                claim.claim_id = str(similar["id"])
-                return claim
-
-        claim_id = await queries.insert_claim(
-            pool, job_id, article_id,
-            claim.text, claim.context_quote,
-            claim.claim_type, claim.checkability,
-            emb or None,
-        )
-        claim.claim_id = claim_id
-        return claim
-
-    tasks = []
-    for i, claim in enumerate(claims):
-        emb = embeddings[i] if i < len(embeddings) else []
-        tasks.append(process_single_claim(claim, emb))
-
-    inserted_claims = list(await asyncio.gather(*tasks))
-
-    # Publish claims extracted event
-    await publish_event(redis, job_id, "claims_extracted", {
-        "claims": [
-            {
-                "claim_id": c.claim_id,
-                "text": c.text,
-                "claim_type": c.claim_type,
-                "checkability": c.checkability,
-            }
-            for c in inserted_claims
-        ],
-        "extraction_notes": extraction_notes,
-    })
-
-    await publish_status(redis, job_id, "sourcing_claims", "Finding sources for each claim...")
-
-    # Sourcing & Bias analysis in parallel
-    source_results_raw = []
-    bias_result = None
-    try:
-        source_tasks = [find_sources(claim, redis) for claim in inserted_claims]
-        bias_task = score_bias(cleaned, input_url)
-
-        sourcing_start = time.perf_counter()
-        # 15s Timeout for sourcing + bias stages in parallel (reduced from 45s)
-        results = await asyncio.wait_for(
-            asyncio.gather(
-                asyncio.gather(*source_tasks, return_exceptions=True),
-                bias_task,
-                return_exceptions=True,
-            ),
-            timeout=15.0
-        )
-        sourcing_duration = time.perf_counter() - sourcing_start
-        model_call_time += sourcing_duration # include search/bias LLM latency
-        source_results_raw, bias_result = results
-    except asyncio.TimeoutError:
-        logger.warning("Job %s: Sourcing/Bias analysis timed out (15s limit exceeded). Proceeding with Tier 3 best-effort fallback.", job_id)
-        await publish_status(redis, job_id, "judging", "⚠️ Fallback: Sourcing timed out. Generating best-effort verdict...")
-        
-        # Default bias result
-        bias_result = BiasResult(
-            bias_score=50, bias_direction="neutral", framing_flags=[], loaded_terms=[], summary="Bias analysis timed out."
-        )
-        await queries.insert_bias_result(
-            pool, job_id, article_id,
-            bias_result.bias_score, bias_result.bias_direction,
-            [], [], bias_result.summary,
-        )
-
-        try:
-            judge_start = time.perf_counter()
-            judge_result = await asyncio.wait_for(run_best_effort_verdict(cleaned, bias_result), timeout=10.0)
-            model_call_time += (time.perf_counter() - judge_start)
-        except Exception as e:
-            logger.error("Job %s: Fallback verdict failed: %s", job_id, e)
-            from models.schemas import JudgeResult
-            judge_result = JudgeResult(
-                overall_verdict="UNVERIFIABLE",
-                overall_confidence=0.1,
-                overall_summary="Verification timed out during source gathering.",
-                claim_verdicts=[]
-            )
-
-        await publish_status(redis, job_id, "finalizing", "Saving best-effort verdict...")
-
-        await queries.insert_verdict(
-            pool, job_id, None,
-            judge_result.overall_verdict, judge_result.overall_confidence,
-            "Sourcing timed out. " + judge_result.overall_summary, True
-        )
-
-        await queries.update_job_status(pool, job_id, "PARTIAL")
-        await publish_event(redis, job_id, "verdict", {
-            "overall_verdict": judge_result.overall_verdict,
-            "overall_confidence": judge_result.overall_confidence,
-            "overall_summary": "Sourcing timed out. " + judge_result.overall_summary,
-            "claim_verdicts": [],
-        })
-        await publish_done(redis, job_id)
-        
-        # Log diagnostics
-        end_time = time.perf_counter()
-        total_time = end_time - start_time
-        proc_time = total_time - fetch_time
-        logger.info(
-            "\n[DIAGNOSTICS] Job %s (PARTIAL/TIMEOUT) Performance Metrics:\n"
-            "- Queue Time: %.3fs\n"
-            "- Fetch Time: %.3fs\n"
-            "- Model Call Time: %.3fs\n"
-            "- Processing Time: %.3fs\n"
-            "- Total Job Time: %.3fs\n"
-            "- Routing Path: Sourcing Timeout Fallback\n",
-            job_id, queue_time, fetch_time, model_call_time, proc_time, total_time
-        )
-        return
-
-    # Handle bias failure if it returned exception
-    if isinstance(bias_result, Exception) or bias_result is None:
-        logger.error("Bias scoring failed: %s", bias_result)
-        bias_result = BiasResult(
-            bias_score=50, bias_direction="neutral",
-            framing_flags=[], loaded_terms=[],
-            summary="Bias analysis unavailable."
-        )
-
-    # Insert bias result
-    await queries.insert_bias_result(
-        pool, job_id, article_id,
-        bias_result.bias_score, bias_result.bias_direction,
-        [f.model_dump() for f in bias_result.framing_flags],
-        bias_result.loaded_terms, bias_result.summary,
-    )
-
-    await publish_event(redis, job_id, "bias_scored", {
-        "bias_score": bias_result.bias_score,
-        "bias_direction": bias_result.bias_direction,
-        "framing_flags": [f.model_dump() for f in bias_result.framing_flags],
-        "loaded_terms": bias_result.loaded_terms,
-        "summary": bias_result.summary,
-    })
-
-    # Process source results
-    sources_by_claim: Dict[str, ClaimSourcesResult] = {}
-    for source_result in (source_results_raw if isinstance(source_results_raw, list) else []):
-        if isinstance(source_result, Exception) or source_result is None:
-            logger.warning("Source finding failed for a claim: %s", source_result)
-            continue
-        cid = source_result.claim_id
-        sources_by_claim[cid] = source_result
-
-        # Insert sources into DB
-        source_ids = []
-        for s in source_result.sources:
-            sid = await queries.insert_source(
-                pool, cid, s.url, s.title, s.domain,
-                s.snippet, s.full_text, s.stance,
-                s.quality_score or 0.0, s.fetch_status or "unknown"
-            )
-            s.source_id = sid
-            source_ids.append(sid)
-
-        await publish_event(redis, job_id, "claim_sourced", {
-            "claim_id": cid,
-            "sources": [
-                {
-                    "source_id": s.source_id,
-                    "url": s.url,
-                    "title": s.title,
-                    "domain": s.domain,
-                    "snippet": s.snippet,
-                    "stance": s.stance,
-                    "quality_score": s.quality_score,
-                    "fetch_status": s.fetch_status,
-                }
-                for s in source_result.sources
-            ],
-        })
-
-    await publish_status(redis, job_id, "judging", "Synthesizing final verdict...")
-
-    # Judge Agent
-    try:
-        judge_start = time.perf_counter()
-        # 10s Timeout for Judge Agent
-        judge_result = await asyncio.wait_for(
-            run_judge(inserted_claims, sources_by_claim, bias_result, cleaned),
-            timeout=10.0
-        )
-        model_call_time += (time.perf_counter() - judge_start)
-    except Exception as e:
-        logger.warning("Job %s: Judge agent failed or timed out (%s). Using computed fallback.", job_id, e)
-        await publish_status(redis, job_id, "judging", "⚠️ Fallback: Judge failed. Computing evidence-based verdict...")
-        judge_result = compute_fallback_verdict(inserted_claims, sources_by_claim, bias_result)
-
-    await publish_status(redis, job_id, "finalizing", "Saving final verdicts...")
-
-    # Insert verdicts
-    for cv in judge_result.claim_verdicts:
-        await queries.insert_verdict(
-            pool, job_id, cv.claim_id,
-            cv.verdict, cv.confidence, cv.reasoning, False
-        )
-
-    # Insert overall verdict
-    await queries.insert_verdict(
-        pool, job_id, None,
-        judge_result.overall_verdict, judge_result.overall_confidence,
-        judge_result.overall_summary, True
-    )
-
-    # Publish verdict event
+    if complexity == "fast":
+        await run_fast_path_pipeline_flow(job_id, redis, pool, raw_text, cleaned, wc, url_hash, input_url, user_id, start_time, fetch_time, model_call_time)
+    elif complexity == "standard":
+        await run_standard_path_pipeline_flow(job_id, redis, pool, raw_text, cleaned, wc, url_hash, input_url, user_id, start_time, fetch_time, model_call_time, http_client)
+    elif complexity == "deep":
+        await run_deep_path_pipeline_flow(job_id, redis, pool, raw_text, cleaned, wc, url_hash, input_url, user_id, start_time, fetch_time, model_call_time, http_client)
+    else:
+        # recovery or noisy/broken
+        await run_recovery_pipeline_flow(job_id, redis, pool, raw_text, cleaned, wc, url_hash, input_url, user_id, start_time, fetch_time, model_call_time, f"Classified complexity path: {complexity}") Publish verdict event
     await publish_event(redis, job_id, "verdict", {
         "overall_verdict": judge_result.overall_verdict,
         "overall_confidence": judge_result.overall_confidence,

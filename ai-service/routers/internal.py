@@ -20,6 +20,11 @@ async def dispatch_job(
         raise HTTPException(status_code=403, detail="Forbidden")
 
     try:
+        from db import queries
+        pool = request.app.state.db_pool
+        await queries.insert_audit_log(pool, body.job_id, body.user_id, "QUEUE_ENQUEUED", {"elapsed_seconds": 0.0})
+        logger.info("[LIFECYCLE] [JOB_ID: %s] [ACTION: QUEUE_ENQUEUED]", body.job_id)
+
         await request.app.state.redis.lpush("job_queue", body.job_id)
         logger.info("Job %s queued from Spring Boot", body.job_id)
         return {"job_id": body.job_id, "queued": True}

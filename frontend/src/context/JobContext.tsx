@@ -62,6 +62,16 @@ export type Stage =
   | 'finalizing'
   | 'complete'
   | 'error'
+  | 'routing'
+  | 'fetching'
+  | 'extracting'
+  | 'parsing_claims'
+  | 'verifying_sources'
+  | 'reasoning'
+  | 'generating_verdict'
+  | 'completed'
+  | 'partial_completed'
+  | 'failed'
 
 export interface JobState {
   jobId: string | null
@@ -124,20 +134,23 @@ function reducer(state: JobState, action: Action): JobState {
     case 'SET_BIAS':
       return { ...state, bias: action.bias }
     case 'SET_VERDICT':
-      return { ...state, verdict: action.verdict, stage: 'complete' }
+      return { ...state, verdict: action.verdict, stage: 'completed' }
     case 'SET_ERROR':
-      return { ...state, error: action.error, stage: 'error' }
-    case 'HYDRATE':
+      return { ...state, error: action.error, stage: 'failed' }
+    case 'HYDRATE': {
+      const finalStage = action.payload.stage ?? (action.payload.verdict ? 'completed' : 'fetching')
+      const isTerminal = finalStage === 'complete' || finalStage === 'completed' || finalStage === 'partial_completed' || finalStage === 'failed' || finalStage === 'error'
       return {
         ...state,
         claims: action.payload.claims,
         sourcesByClaim: action.payload.sourcesByClaim,
         bias: action.payload.bias,
         verdict: action.payload.verdict,
-        stage: action.payload.stage ?? (action.payload.verdict ? 'complete' : 'fetching_article'),
-        stageMessage: action.payload.stage === 'complete' ? '' : (state.stageMessage || 'Processing pipeline...'),
-        error: null,
+        stage: finalStage,
+        stageMessage: isTerminal ? '' : (state.stageMessage || 'Processing pipeline...'),
+        error: finalStage === 'failed' || finalStage === 'error' ? (state.error || 'Job failed') : null,
       }
+    }
     case 'RESET':
       return initialState
     default:

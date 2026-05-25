@@ -90,6 +90,7 @@ async def scrape_url(
         url: str,
         redis=None,
         ttl: int = 21600,  # 6 hours
+        http_client: Optional[httpx.AsyncClient] = None,
 ) -> tuple[str, str]:
     """
     Fetch and scrape a URL. Returns (text, fetch_status).
@@ -112,13 +113,16 @@ async def scrape_url(
             pass
 
     try:
-        async with httpx.AsyncClient(
-                timeout=SCRAPE_TIMEOUT,
-                headers={"User-Agent": BOT_USER_AGENT},
-                follow_redirects=True,
-                max_redirects=3,
-        ) as client:
-            response = await client.get(url)
+        if http_client is not None:
+            response = await http_client.get(url, timeout=SCRAPE_TIMEOUT)
+        else:
+            async with httpx.AsyncClient(
+                    timeout=SCRAPE_TIMEOUT,
+                    headers={"User-Agent": BOT_USER_AGENT},
+                    follow_redirects=True,
+                    max_redirects=3,
+            ) as client:
+                response = await client.get(url)
 
             if response.status_code in (401, 402, 403):
                 text, status = response.text[:500], "blocked"
@@ -174,27 +178,31 @@ async def scrape_url(
     return "", status
 
 
-async def _fetch_article_url_once(url: str) -> tuple[str, str]:
+async def _fetch_article_url_once(url: str, http_client: Optional[httpx.AsyncClient] = None) -> tuple[str, str]:
     """Single attempt to fetch article text."""
-    async with httpx.AsyncClient(
-            timeout=5.0,  # Cap timeout to 5.0 seconds
-            headers={"User-Agent": BOT_USER_AGENT},
-            follow_redirects=True,
-            max_redirects=3,
-    ) as client:
-        response = await client.get(url)
+    if http_client is not None:
+        response = await http_client.get(url, timeout=5.0)
         response.raise_for_status()
+    else:
+        async with httpx.AsyncClient(
+                timeout=5.0,  # Cap timeout to 5.0 seconds
+                headers={"User-Agent": BOT_USER_AGENT},
+                follow_redirects=True,
+                max_redirects=3,
+        ) as client:
+            response = await client.get(url)
+            response.raise_for_status()
 
-        soup = BeautifulSoup(response.text, "lxml")
-        for tag in soup.find_all(["nav", "footer", "header", "aside",
-                                  "script", "style", "noscript"]):
-            tag.decompose()
+    soup = BeautifulSoup(response.text, "lxml")
+    for tag in soup.find_all(["nav", "footer", "header", "aside",
+                              "script", "style", "noscript"]):
+        tag.decompose()
 
-        text = soup.get_text(separator=" ", strip=True)
-        return text, "success"
+    text = soup.get_text(separator=" ", strip=True)
+    return text, "success"
 
 
-async def fetch_article_url(url: str) -> tuple[str, str]:
+async def fetch_article_url(url: str, http_client: Optional[httpx.AsyncClient] = None) -> tuple[str, str]:
     """
     Fetch a full article URL for analysis with bounded, rapid retries.
     Returns (raw_html_text, fetch_status).
@@ -206,7 +214,7 @@ async def fetch_article_url(url: str) -> tuple[str, str]:
 
     for attempt in range(2):  # Max 2 attempts total
         try:
-            return await _fetch_article_url_once(url)
+            return await _fetch_article_url_once(url, http_client)
         except (httpx.TimeoutException, httpx.NetworkError) as e:
             last_error = TimeoutError(f"Article fetch timed out or network error: {url}")
             logger.warning("Article fetch attempt %d failed for %s: %s", attempt + 1, url, e)

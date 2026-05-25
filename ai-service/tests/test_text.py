@@ -28,15 +28,15 @@ def test_md5_hash_stable():
 
 
 def test_classify_article_complexity():
-    assert classify_article_complexity("hello") == "broken/noisy"
-    # less than 100 chars
-    assert classify_article_complexity("word word word word word") == "broken/noisy"
+    assert classify_article_complexity("hello") == "recovery"
+    # less than 80 words
+    assert classify_article_complexity("word word word word word") == "recovery"
     
     short_text = " ".join(["word"] * 150) + " " + "x" * 150
-    assert classify_article_complexity(short_text) == "short/simple"
+    assert classify_article_complexity(short_text) == "fast"
     
     medium_text = " ".join(["word"] * 800)
-    assert classify_article_complexity(medium_text) == "medium"
+    assert classify_article_complexity(medium_text) == "standard"
     
     long_text = " ".join(["word"] * 2000)
-    assert classify_article_complexity(long_text) == "long/complex"
+    assert classify_article_complexity(long_text) == "deep"
