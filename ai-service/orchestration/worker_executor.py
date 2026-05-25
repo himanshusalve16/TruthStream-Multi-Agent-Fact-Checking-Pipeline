@@ -76,6 +76,7 @@ async def process_job(job_id: str, redis: aioredis.Redis, pool, http_client) -> 
 
 async def run_job_with_semaphore(job_id: str, redis: aioredis.Redis, pool, http_client, worker_name: str):
     async with concurrency_semaphore:
+        await publish_status(redis, job_id, "spawning_agents", "Spawning fact-checking agents...")
         await log_lifecycle_async(pool, job_id, "TASK_DISPATCHED", details={"worker": worker_name})
         await process_job(job_id, redis, pool, http_client)
 
@@ -100,11 +101,11 @@ async def job_worker(app: FastAPI):
                 await log_lifecycle_async(pool, job_id, "WORKER_ASSIGNED", details={"worker": worker_name})
                 
                 await publish_status(redis, job_id, "accepted", "Job accepted by worker thread...")
-                await publish_status(redis, job_id, "spawning_agents", "Spawning fact-checking agents...")
                 
                 # Dispatch the task asynchronously
                 asyncio.create_task(run_job_with_semaphore(job_id, redis, pool, http_client, worker_name))
         except asyncio.CancelledError:
+
             logger.info("Worker cancelled")
             break
         except Exception as e:
