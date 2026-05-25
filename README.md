@@ -1,43 +1,81 @@
-# TruthStream
+# TruthStream — Multi-Agent Fact-Checking Pipeline
 
-AI-powered multi-agent fact-checking. Submit any article URL or text, and get live-streamed claim extraction, source verification, bias analysis, and a synthesized verdict.
+TruthStream is a production-grade, low-latency concurrent processing pipeline for automated fact-checking. Submit any article URL or text passage to extract discrete factual claims, verify them against active web sources, score media framing and language bias, and receive a synthesized jury verdict — streamed live to your browser.
 
-## Stack
+---
 
-| Layer | Technology |
-|-------|------------|
-| Frontend | React 19, Vite 8, TailwindCSS v4, TypeScript |
-| API Gateway | Spring Boot 3.2, SSE relay |
-| AI Service | Python 3.12, FastAPI, Gemini 2.5 Flash, 4 agents |
-| Database | PostgreSQL 16 + pgvector |
-| Queue / Pub-Sub | Redis 7 |
-| Containerization | Docker Compose |
+## The Problem & Solution
 
-## Architecture
+### The Problem
+Traditional news consumption and information verification are slow, manually intensive, and prone to subjective reviewer bias. Verifying a single news article requires:
+1. Identifying discrete, checkable factual claims.
+2. Formulating search queries and evaluating search results.
+3. Scraping source pages while bypassing ads/boilerplate.
+4. Synthesizing split and conflicting source stances.
+5. Grading political framing bias and emotionally charged language.
+
+Doing this manually takes minutes or hours per article.
+
+### The Solution
+TruthStream automates this entire process using a cooperative **multi-agent system** powered by Google Gemini and PostgreSQL. By dividing tasks among specialized AI agents and coordinating them via an asynchronous, health-monitored task queue, TruthStream can fact-check an article and stream live feedback in under 10 seconds.
+
+---
+
+## Key Features
+
+- **Asynchronous Pipeline Ingestion**: Web scraping and CPU-bound parsing are offloaded to separate thread executors, protecting the event loop and ensuring low latency.
+- **Dual-Queue Segregation**: Submissions are dynamically routed based on length. Short passages (under 600 words) go to the Fast-Track queue (`job_queue_fast`) for single-pass analysis. Large articles or URLs go to the Standard/Slow queue (`job_queue_slow`) for parallel web verification.
+- **Scraper Bypass Mode**: To minimize web request overhead, the Standard path bypasses full-text page scraping, extracting stances directly from search result snippets ranked using a local token overlap reranker. Deep checks retrieve full page content.
+- **pgvector Semantic Deduplication**: Extracted claims are vectorized into 768-dimensional embeddings (`text-embedding-004`) and matched against PostgreSQL records. If a claim has been verified in the past 24 hours, the previous verdict is reused, skipping execution.
+- **Cooperative Task Cancellation**: Users can interrupt running tasks from the frontend. A Redis Pub/Sub channel publishes cancellation triggers, allowing FastAPI workers to catch `asyncio.CancelledError` and terminate threads cleanly.
+- **D3.js Gauges & Timelines**: The frontend includes responsive neon glassmorphic dashboards, live progress tracking, and interactive D3.js timelines visualizing claim confidence and source consensus.
+
+---
+
+## System Architecture
+
+TruthStream consists of five containerized services orchestrated via Docker:
 
 ```
-Browser
-  │
-  ▼
-nginx (port 3000)  ──/api proxy──►  Spring Boot (port 8080)
-                                          │              │
-                                       Redis         FastAPI (port 8000)
-                                          │              │
-                                    SSE stream ◄── PostgreSQL + pgvector
+                  ┌──────────────────────────────┐
+                  │        User Browser          │
+                  └──────────────┬───────────────┘
+                     HTTP POST   │   GET SSE
+                     /api/jobs   │   /jobs/{id}/stream
+                                 ▼
+                  ┌──────────────────────────────┐
+                  │    Spring Boot API Gateway   │
+                  │         (Port 8080)          │
+                  └──────┬────────────────┬──────┘
+             HTTP POST   │                │   Redis SUBSCRIBE
+        /internal/jobs   │                │   job:{id}:events
+                         ▼                ▼
+┌──────────────────────────────┐   ┌──────────────┐
+│      FastAPI AI Service      │   │    Redis     │
+│         (Port 8000)          │   │ (Port 6379)  │
+└──────────────┬───────────────┘   └──────▲───────┘
+   Async Pool  │                          │
+   BRPOP Queue │                          │
+               ▼                          │
+┌──────────────────────────────┐          │   Redis PUBLISH
+│    Async Workers (Fast/Slow) ├──────────┘   job:{id}:events
+└────┬────────────────────┬────┘
+     │                    │
+     ▼                    ▼
+┌────────────┐   ┌────────────────────────┐
+│ Gemini API │   │ PostgreSQL + pgvector  │
+└────────────┘   │      (Port 5432)       │
+                 └────────────────────────┘
 ```
 
-**Pipeline:** URL/text → fetch & clean → extract claims → [find sources ∥ score bias] → judge → stream verdict via SSE
+### Technology Stack
+- **Frontend**: React 19, Vite 8, TailwindCSS v4, TypeScript, D3.js
+- **API Gateway**: Spring Boot 3.2, Spring MVC Async Emitters, Lettuce Redis
+- **AI Service**: Python 3.12, FastAPI, asyncpg, Google GenAI SDK (Gemini 2.5 Flash & text-embedding-004)
+- **Database**: PostgreSQL 16 + pgvector
+- **Broker / Cache**: Redis 7 (Queues & Pub/Sub messaging)
 
-## Production Redesign & Performance Optimization
-
-TruthStream has been redesigned to support a production-grade, low-latency concurrent processing pipeline:
-
-* **Ingestion & Parsing Stabilization**: Offloaded blocking synchronous DNS hostname lookups and CPU-bound BeautifulSoup DOM cleanup onto separate thread executors (`run_in_executor`) to protect the FastAPI event loop from starvation.
-* **Dual-Queue Segregation**: Workloads are automatically segmented into `job_queue_fast` (plain-text checks, short passages) and `job_queue_slow` (crawling-heavy URL targets) queues. Worker threads are isolated using specialized semaphores (Fast: 15 concurrent threads, Slow: 4 concurrent threads).
-* **Crawler / Scraper Bypass Mode**: Standard-track jobs bypass full-text HTML crawling of search reference URLs, relying on a fast local lexical/overlap snippet reranker. This avoids slow network requests and reduces job latency by up to 90%. Deep-track checks retain full-text scraping.
-* **Single-Pass Structured Judging**: Restructured the jury synthesis agent (`agents/judge.py`) to execute in a single structured prompt, significantly reducing sequential LLM roundtrips and optimizing token consumption.
-* **Cooperative Cancellation & Watchdogs**: Active tasks register heartbeats in Redis every 2.0s. If a job is cancelled from the frontend, a cancellation event is published to `job:cancel:events` to interrupt active workers cooperatively. An active 45s watchdog automatically terminates stalled tasks.
-* **Overhauled Dashboard & SVG Flowchart**: The frontend UI is updated with neon glassmorphism panels, dynamic pipeline bypass banners, and an SVG flowchart that dynamically dims bypassed pipeline steps and draws curved bypass paths.
+---
 
 ## Quick Start
 
@@ -45,205 +83,139 @@ TruthStream has been redesigned to support a production-grade, low-latency concu
 - [Docker Desktop](https://www.docker.com/products/docker-desktop/) (includes Docker Compose v2)
 - A [Google Gemini API key](https://aistudio.google.com/app/apikey)
 
-> No local Python, Java, or Node.js required — everything runs in Docker.
-
-### 1. Clone and configure
-
+### 1. Clone the Repository & Configure Environment
 ```powershell
-git clone https://github.com/himanshusalve16/TruthStream-Multi-Agent-Fact-Checking-Pipeline
-cd truthstream
+git clone https://github.com/himanshusalve16/TruthStream-Multi-Agent-Fact-Checking-Pipeline.git
+cd TruthStream
 
-# Create your environment file from the template
+# Copy the environment file template
 Copy-Item .env.example .env
 ```
 
-Open `.env` and fill in:
-- `GEMINI_API_KEY` — **required** for the AI pipeline
-- `INTERNAL_API_SECRET` — generate with: `python -c "import secrets; print(secrets.token_hex(16))"`
-- `DB_PASSWORD` — choose any password
-- `SERPAPI_KEY` — optional; falls back to DuckDuckGo if not set
+Open `.env` in a text editor and fill in the required keys:
+- `GEMINI_API_KEY` — **Required** for AI pipeline operations. Supports key rotation (you can add `GEMINI_API_KEY_1`, `GEMINI_API_KEY_2`, etc.).
+- `INTERNAL_API_SECRET` — Used to secure Spring Boot-to-FastAPI calls. Generate a secret using:
+  ```powershell
+  $bytes = New-Object byte[] 16
+  [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
+  [System.BitConverter]::ToString($bytes) -replace '-', ''
+  ```
+- `DB_PASSWORD` — Choose a secure password for the Postgres container.
+- `SERPAPI_KEY` — Optional. If not set, TruthStream falls back to DuckDuckGo HTML scraping (no API key required).
 
-### 2. Start everything
-
-```powershell
-docker compose up --build
-```
-
-Or use the helper script (adds pre-flight checks):
+### 2. Start the Stack
+You can start the full stack in Docker using the helper script (which runs pre-flight checks):
 ```powershell
 .\start.ps1
 ```
-
-Wait ~60 seconds for all services to become healthy. You'll see:
-```
-truthstream-backend  | Started TruthstreamBackendApplication in 12.3 seconds
-truthstream-ai       | AI service ready.
-truthstream-frontend | /docker-entrypoint.sh: Configuration complete
-```
-
-### 3. Open the app
-
-| Service | URL |
-|---------|-----|
-| **Frontend** | http://localhost:3000 |
-| Backend health | http://localhost:8080/actuator/health |
-| FastAPI docs | http://localhost:8000/docs |
-
-Register, sign in, and submit any news article URL.
-
-### Stop
-
+Or directly via Docker Compose:
 ```powershell
-docker compose down           # stop, keep database
-.\stop.ps1                    # same, with status output
-.\stop.ps1 -Clean             # stop + destroy database volumes (fresh start)
+docker compose up --build -d
+```
+Wait around 45–60 seconds for all services to become healthy. Check container health with:
+```powershell
+docker compose ps
+```
+
+### 3. Access URLs
+
+| Service | Access URL | Purpose |
+|---|---|---|
+| **Frontend UI** | [http://localhost:3000](http://localhost:3000) | Main user interface |
+| **Spring Boot Actuator** | [http://localhost:8080/actuator/health](http://localhost:8080/actuator/health) | Gateway health status |
+| **FastAPI Docs** | [http://localhost:8000/docs](http://localhost:8000/docs) | AI service documentation & testing |
+| **AI System Health** | [http://localhost:8000/observability/system/health](http://localhost:8000/observability/system/health) | Telemetry metrics & queue depths |
+
+### 4. Stop the Stack
+```powershell
+# Stop all containers while preserving data
+.\stop.ps1
+
+# Stop all containers and delete database volumes (Fresh Start)
+.\stop.ps1 -Clean
 ```
 
 ---
 
-## Port Conflicts
+## Local Development (Without Docker)
 
-If any port is already in use, change the corresponding `*_PORT` in `.env`:
+To run the services locally with hot-reloading:
 
-```env
-DB_PORT=5433        # was 5432
-REDIS_PORT=6380     # was 6379
-SPRING_PORT=8081    # was 8080
-FASTAPI_PORT=8001   # was 8000
-FRONTEND_PORT=3001  # was 3000
+### 1. Spin up Postgres and Redis in Docker
+```powershell
+docker compose up db redis -d
 ```
 
-Then restart: `docker compose up --build`
+### 2. Run the AI Service (Python)
+```powershell
+cd ai-service
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
 
----
+# Load environment variables
+. ..\load-env.ps1 -EnvFile ..\.env
 
-## Project Structure
-
+# Run FastAPI with reload
+uvicorn main:app --reload --port 8000
 ```
-truthstream/
-├── frontend/               React + Vite + TailwindCSS
-│   ├── src/
-│   ├── Dockerfile          Node 20 build → nginx serve
-│   ├── nginx.conf          API proxy + SSE headers
-│   └── .dockerignore
-├── backend/                Spring Boot 3 — SSE relay
-│   ├── src/
-│   ├── Dockerfile          JDK 21 build → JRE runtime
-│   └── .dockerignore
-├── ai-service/             FastAPI — 4 AI agents
-│   ├── agents/             extractor, source_finder, bias_scorer, judge
-│   ├── db/                 asyncpg queries
-│   ├── services/           scraper, embeddings, redis_publisher
-│   ├── Dockerfile          Python 3.12 multi-stage
-│   └── .dockerignore
-├── infra/postgres/
-│   └── init.sql            pgvector extension setup
-├── docker-compose.yml      Full orchestration
-├── .env.example            Safe template — commit this
-├── .env                    Real secrets — in .gitignore
-├── start.ps1               Windows startup script
-└── stop.ps1                Windows teardown script
+
+### 3. Run the Backend (Spring Boot)
+```powershell
+cd backend
+. ..\load-env.ps1 -EnvFile ..\.env
+
+# Adjust environment database URLs to target localhost
+$env:SPRING_DATASOURCE_URL = "jdbc:postgresql://localhost:5432/truthstream"
+$env:SPRING_DATA_REDIS_HOST = "localhost"
+
+.\mvnw.cmd spring-boot:run
+```
+
+### 4. Run the Frontend (React)
+```powershell
+cd frontend
+npm install
+npm run dev
+# Vite starts development server on http://localhost:3000
 ```
 
 ---
 
 ## API Reference
 
-| Method | Path | Description |
-|--------|------|-------------|
-| `POST` | `/api/jobs` | Submit URL or text |
-| `POST` | `/api/jobs/{id}/cancel` | Cancel active fact-check |
-| `GET` | `/api/jobs` | Paginated job history |
-| `GET` | `/api/jobs/{id}/stream` | SSE live stream |
-| `GET` | `/api/jobs/{id}/verdict` | Full verdict |
-| `GET` | `/api/jobs/{id}/sources` | Sources by claim |
+The gateway exposes the following endpoints (Spring Security is configured to allow access without authentication for development convenience):
+
+| Method | Endpoint | Description | Payload / Response |
+|---|---|---|---|
+| `POST` | `/api/jobs` | Submits a URL or text block to fact-check | `{"input_type": "url", "url": "..."}` $\to$ Returns `{"job_id": "...", "status": "PENDING"}` |
+| `GET` | `/api/jobs/{id}/stream` | SSE stream for real-time progress updates | Relays events: `status`, `claims_extracted`, `claim_sourced`, `bias_scored`, `verdict`, `done` |
+| `GET` | `/api/jobs/{id}` | Fetches job metadata and processing status | Returns job status (`COMPLETE`, `PROCESSING`, `FAILED`) |
+| `POST` | `/api/jobs/{id}/cancel` | Aborts an active processing job | Returns updated job metadata with status `FAILED` |
+| `GET` | `/api/jobs/{id}/verdict` | Returns the completed fact-checking verdict | Returns overall rating, summary, bias data, and claim verdicts |
+| `GET` | `/api/jobs` | Paginated job history for the current user | Query parameters: `page`, `size` |
 
 ---
 
-## Startup Order & Health Checks
+## Diagnostics & Telemetry
 
-Docker Compose enforces this startup sequence:
+The AI service includes a telemetry router (`ai-service/routers/observability.py`) to monitor system health:
+- `/observability/system/health`: Checks database connection, Redis connectivity, Gemini API key health, and queue worker utilization.
+- `/observability/metrics/queue-health`: Returns current message depths for `job_queue_fast` and `job_queue_slow`.
+- `/observability/jobs/{job_id}/metrics`: Measures execution times and latencies for each pipeline stage by parsing database logs.
 
-```
-db (pg_isready healthy)
-redis (PING healthy)
-    └─► ai-service (/health returns 200)
-            └─► backend (actuator/health returns UP)
-                    └─► frontend (nginx starts)
-```
-
-Each service has a `healthcheck` and uses `depends_on: condition: service_healthy`. Spring Boot and FastAPI both implement retry logic for transient DB/Redis connection failures during startup.
-
----
-
-## Development (local, without Docker)
-
-If you want to run services locally for hot-reload development:
-
-```powershell
-# 1. Start infrastructure only
-docker compose up db redis -d
-
-# 2. AI service (new terminal)
-cd ai-service
-python -m venv .venv && .\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-$env:DATABASE_URL = "postgresql://postgres:postgres@localhost:5432/truthstream"
-$env:REDIS_URL = "redis://localhost:6379"
-$env:GEMINI_API_KEY = "sk-your-key"
-$env:INTERNAL_API_SECRET = "your-secret"
-uvicorn main:app --reload --port 8000
-
-# 3. Backend (new terminal)
-cd backend
-$env:SPRING_DATASOURCE_URL = "jdbc:postgresql://localhost:5432/truthstream"
-$env:SPRING_DATASOURCE_USERNAME = "postgres"
-$env:SPRING_DATASOURCE_PASSWORD = "postgres"
-$env:SPRING_DATA_REDIS_HOST = "localhost"
-$env:SPRING_DATA_REDIS_PORT = "6379"
-$env:FASTAPI_BASE_URL = "http://localhost:8000"
-$env:INTERNAL_API_SECRET = "your-secret"
-.\mvnw.cmd spring-boot:run
-
-# 4. Frontend (new terminal)
-cd frontend
-npm install
-npm run dev       # http://localhost:3000, proxies /api → localhost:8080
-```
-
----
-
-## Tests
-
-```powershell
-cd frontend   && npm run test
-cd backend    && .\mvnw.cmd test
-cd ai-service && python -m pytest tests/ -q
-```
+> [!NOTE]
+> **Database Table Mismatch**: The observability router queries the `audit_logs` table. However, the database schema table is named `audit_log` (singular). Endpoints that parse execution logs will throw a database error. This is a known database naming inconsistency.
 
 ---
 
 ## Troubleshooting
 
-**Port 5432 already in use**
-→ A local PostgreSQL is running. Either stop it, or change `DB_PORT=5433` in `.env`.
-
-**"replace-me" API key errors**
-→ Edit `.env` and set a real `GEMINI_API_KEY`.
-
-**ai-service keeps restarting**
-→ It retries DB connection up to 10 times. Check `docker compose logs ai-service` for the exact error.
-
-**Fresh start (wipe database)**
-```powershell
-.\stop.ps1 -Clean
-.\start.ps1
-```
-
-**Rebuild without cache**
-```powershell
-docker compose build --no-cache
-docker compose up
-```
+- **Postgres Port Conflicts**: If you have a local PostgreSQL instance running on port 5432, the database container will fail to start. Update `DB_PORT=5433` in `.env` and restart.
+- **Gemini Key Issues**: If you see quota limits or key validation failures, you can configure multiple API keys (`GEMINI_API_KEY_1`, `GEMINI_API_KEY_2`, etc.) in `.env` to enable rotation. If all keys fail, the system falls back to **Sandbox Mock Fallback Mode** to generate simulated responses.
+- **Stuck Jobs**: If containers exit unexpectedly, jobs may be left in `PROCESSING` states. The system watchdog automatically sweeps and fails these jobs on the next startup. To wipe the database completely, run `.\stop.ps1 -Clean`.
 
 ---
+
+## License
+Distributed under the MIT License. See [LICENSE](LICENSE) for details.

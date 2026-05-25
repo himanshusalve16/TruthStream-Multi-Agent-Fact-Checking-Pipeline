@@ -1,135 +1,107 @@
-# TruthStream Deployment Guide
+# TruthStream — Railway & Render Deployment Guide
 
-> For **Docker Compose** (local/VPS), **AWS** (EC2 / ECS), and how to obtain **Gemini / SerpAPI** API keys (DuckDuckGo search needs no key), see **[docs/API-KEYS-AND-DEPLOYMENT.md](docs/API-KEYS-AND-DEPLOYMENT.md)**.
+This guide details how to deploy TruthStream's multi-service architecture to cloud application platforms like **Railway** or **Render**, using Vercel for static frontend hosting.
 
-## Overview
+---
 
-| Service | Platform | Notes |
-|---------|----------|-------|
-| Frontend | [Vercel](https://vercel.com) / [Render](https://render.com) | Root: `frontend/` |
-| Backend | [Railway](https://railway.app) / Render | `backend/Dockerfile` |
-| AI Service | Railway / Render | `ai-service/Dockerfile` |
-| PostgreSQL | Railway / Render | Enable pgvector: run `infra/postgres/init.sql` once |
-| Redis | Railway / Render | |
+## Service Deployment Matrix
 
-## 1. Railway — Database & Redis
+The monorepo contains services that should be deployed as follows:
 
-1. Create a new Railway project.
-2. Add **PostgreSQL** and **Redis** from the template marketplace.
-3. Connect to Postgres and run:
+| Service | Build Target | Recommended Platform | Configurations |
+|---|---|---|---|
+| **Frontend** | Static build (`/frontend`) | [Vercel](https://vercel.com) | Point to the Backend public URL |
+| **Backend** | Dockerfile (`/backend`) | [Railway](https://railway.app) / [Render](https://render.com) | Expose Spring Boot port (`8080`) |
+| **AI Service** | Dockerfile (`/ai-service`) | Railway / Render | Private or Web Service on Port `8000` |
+| **PostgreSQL** | Managed Database | Railway / Render | Require extensions (`vector`, `uuid-ossp`, `pgcrypto`) |
+| **Redis** | Managed Cache | Railway / Render | Used for workers and pub/sub relay |
 
-```sql
-CREATE EXTENSION IF NOT EXISTS vector;
-CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
-CREATE EXTENSION IF NOT EXISTS pgcrypto;
-```
+---
 
-4. Flyway migrations run automatically when the backend starts.
+## 1. Database & Redis Setup
 
-## 2. Railway — AI Service
+Regardless of the platform, your Postgres instance must support the `pgvector` extension.
 
-1. New service → Deploy from GitHub repo → set root directory to `ai-service`.
-2. Set environment variables:
-
-| Variable | Value |
-|----------|-------|
-| `DATABASE_URL` | `${{Postgres.DATABASE_URL}}` (or jdbc-style converted to postgresql://) |
-| `REDIS_URL` | `${{Redis.REDIS_URL}}` |
-| `GEMINI_API_KEY` | your key |
-| `SERPAPI_KEY` | optional — omit for free DuckDuckGo search |
-| `INTERNAL_API_SECRET` | random 32+ char string |
-
-3. Note the public URL (e.g. `https://truthstream-ai.up.railway.app`).
-
-## 3. Railway — Backend
-
-1. New service → root `backend`.
-2. Environment variables:
-
-| Variable | Value |
-|----------|-------|
-| `SPRING_DATASOURCE_URL` | `jdbc:postgresql://HOST:PORT/railway` |
-| `SPRING_DATASOURCE_USERNAME` | from Postgres |
-| `SPRING_DATASOURCE_PASSWORD` | from Postgres |
-| `SPRING_DATA_REDIS_HOST` | from Redis |
-| `SPRING_DATA_REDIS_PORT` | `6379` |
-| `FASTAPI_BASE_URL` | AI service internal/public URL |
-| `INTERNAL_API_SECRET` | same as AI service |
-
-3. Generate domain for HTTPS.
-
-## 4. Render Deployment (Alternative to Railway)
-
-### 4.1 Render — Database & Redis
-1. Create a **PostgreSQL** database on Render. Once provisioned, connect via external tool (e.g., pgAdmin or psql) and run:
+1. Provision a PostgreSQL 16 database.
+2. Connect using a database tool (e.g., `psql` or `pgAdmin`) and run the initialization commands:
    ```sql
    CREATE EXTENSION IF NOT EXISTS vector;
    CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
    CREATE EXTENSION IF NOT EXISTS pgcrypto;
    ```
-2. Create a **Redis** instance on Render.
+3. Provision a Redis 7 instance. The Spring Boot backend uses it to subscribe to real-time events, and FastAPI uses it to queue tasks.
 
-### 4.2 Render — AI Service (Private or Web Service)
-1. Create a **Web Service** (or Private Service if backend is in same region).
-2. Connect GitHub repo, set **Root Directory** to `ai-service`.
-3. Set Environment to **Docker**.
-4. Environment Variables:
-   - `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD` (use internal PostgreSQL credentials from Render)
-   - `REDIS_HOST`, `REDIS_PORT` (use internal Redis credentials from Render)
-   - `GEMINI_API_KEY_1`, `GEMINI_API_KEY_2`, etc.
-   - `INTERNAL_API_SECRET`: random 32+ char string
+---
 
-### 4.3 Render — Backend (Web Service)
-1. Create a **Web Service**, set **Root Directory** to `backend`.
-2. Set Environment to **Docker**.
-3. Environment Variables:
-   - `SPRING_DATASOURCE_URL`: `jdbc:postgresql://<RENDER_INTERNAL_DB_HOST>:<PORT>/<DB_NAME>`
-   - `SPRING_DATASOURCE_USERNAME`, `SPRING_DATASOURCE_PASSWORD`
-   - `SPRING_DATA_REDIS_HOST`, `SPRING_DATA_REDIS_PORT`
-   - `FASTAPI_BASE_URL`: AI service internal URL (if Private Service) or public URL
-   - `INTERNAL_API_SECRET`: same as AI service
-   - `JWT_SECRET`: 64-hex char string
+## 2. Deploying the AI Service (Python FastAPI)
 
-### 4.4 Render — Frontend (Static Site)
-1. Create a **Static Site**, set **Root Directory** to `frontend`.
-2. Build Command: `npm run build`
-3. Publish Directory: `dist`
-4. Environment Variables:
-   - `VITE_API_BASE_URL`: The public URL of your Render Backend service.
+Deploy the `ai-service` folder as a Docker service.
 
-## 4. Vercel — Frontend
+### Environment Variables for FastAPI
 
-1. Import repo, set **Root Directory** to `frontend`.
-2. Build: `npm run build` · Output: `dist`
-3. Environment:
+| Variable | Value | Description |
+|---|---|---|
+| `DATABASE_URL` | `postgresql://user:pass@host:port/db` | Standard Postgres connection URI |
+| `REDIS_URL` | `redis://host:port` | Redis connection URI |
+| `GEMINI_API_KEY` | `your-gemini-key` | Google GenAI API key. Supports `GEMINI_API_KEY_1`, `GEMINI_API_KEY_2`, etc., for key rotation |
+| `INTERNAL_API_SECRET` | `your-shared-secret` | Shared secret key with Spring Boot |
+| `SERPAPI_KEY` | `your-serpapi-key` | Optional. If omitted, searches default to DuckDuckGo scraping |
 
-| Variable | Value |
-|----------|-------|
-| `VITE_API_BASE_URL` | Railway backend URL (e.g. `https://truthstream-api.up.railway.app`) |
+*FastAPI exposes port `8000` for internal requests.*
 
-4. Update `frontend/vercel.json` rewrite destination to your backend URL, **or** rely on `VITE_API_BASE_URL` only (preferred — API calls go directly to backend; configure CORS on backend for your `*.vercel.app` origin).
+---
 
-5. In `backend` `WebConfig`, add your Vercel production URL to `allowedOriginPatterns`.
+## 3. Deploying the Backend (Spring Boot Gateway)
 
-## 5. CORS
+Deploy the `backend` folder as a Docker service. Flyway migrations will run automatically on startup to initialize the application tables (`users`, `articles`, `jobs`, `claims`, `sources`, `verdicts`, `bias_results`, `audit_log`).
 
-Ensure `WebConfig.java` includes:
+### Environment Variables for Spring Boot
+
+| Variable | Value | Description |
+|---|---|---|
+| `SPRING_DATASOURCE_URL` | `jdbc:postgresql://host:port/db` | JDBC Postgres connection string |
+| `SPRING_DATASOURCE_USERNAME` | `your-db-user` | DB username |
+| `SPRING_DATASOURCE_PASSWORD` | `your-db-password` | DB password |
+| `SPRING_DATA_REDIS_HOST` | `your-redis-host` | Redis host |
+| `SPRING_DATA_REDIS_PORT` | `6379` | Redis port |
+| `FASTAPI_BASE_URL` | `https://your-ai-service-url` | Public or internal URL of the FastAPI container |
+| `INTERNAL_API_SECRET` | `your-shared-secret` | Shared secret matching the FastAPI configuration |
+
+*Spring Boot exposes port `8080` for API requests.*
+
+---
+
+## 4. Deploying the Frontend (React Vite)
+
+Deploy the `frontend` folder to **Vercel** or **Render Static Sites**.
+
+### Configuration Steps
+1. Create a new project, select the repository, and set the **Root Directory** to `frontend`.
+2. Set the build parameters:
+   - **Build Command**: `npm run build`
+   - **Output Directory**: `dist`
+3. Configure the environment variable:
+   - `VITE_API_BASE_URL`: Set this to the public URL of your Spring Boot backend (e.g., `https://truthstream-backend.up.railway.app`).
+
+### CORS Configuration
+Ensure the backend accepts requests from your frontend domains. The CORS origins are defined in `WebConfig.java` in the backend. If your frontend runs on a custom Vercel domain, add it to the CORS configuration:
 
 ```java
-.allowedOriginPatterns("http://localhost:3000", "https://*.vercel.app", "https://your-app.vercel.app")
+.allowedOriginPatterns("http://localhost:3000", "https://*.vercel.app", "https://your-app.com")
 ```
 
-## 6. Smoke test
+---
 
-1. Register on production frontend.
-2. Submit a short text article (avoids scrape failures during first test).
-3. Confirm SSE events and final verdict render.
+## 5. Verifying the Deployment
 
-## Local full-stack Docker
+Run a smoke test to confirm that services are communicating correctly:
+1. Register a new user account through the frontend UI.
+2. Submit a short text snippet (e.g., "The unemployment rate dropped to 3.4% in 2024"). This runs standard analysis and verifies the database, Redis queue, and Gemini API connections.
+3. Verify that SSE events display in the UI and that the final confidence gauge and verdict render on completion.
 
-```powershell
-. .\load-env.ps1
-docker compose up --build
-```
+---
 
-Frontend: http://localhost:3000
+## Related Guides
+- [README.md](README.md) — Local development and quick start.
+- [API-KEYS-AND-DEPLOYMENT.md](API-KEYS-AND-DEPLOYMENT.md) — Search configuration and API keys.
+- [Working.md](Working.md) — End-to-end architecture and internals.
