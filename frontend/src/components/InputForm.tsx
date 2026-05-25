@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Link2, FileText, Sparkles, AlertCircle } from 'lucide-react'
@@ -11,8 +11,56 @@ export default function InputForm() {
   const [text, setText] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const [systemStatus, setSystemStatus] = useState<'checking' | 'sleeping' | 'waking' | 'ready'>('checking')
+  const [statusDetail, setStatusDetail] = useState<string>('Checking AI Service status...')
   const navigate = useNavigate()
   const { dispatch } = useJobContext()
+
+  useEffect(() => {
+    let active = true
+    let timerId: any = null
+
+    const checkStatus = async () => {
+      try {
+        const res = await jobs.checkReady()
+        if (!active) return
+        
+        const status = res.data.status
+        const details = res.data.details
+        
+        if (status === 'ready') {
+          setSystemStatus('ready')
+          setStatusDetail('Ready')
+        } else if (status === 'waking') {
+          setSystemStatus('waking')
+          setStatusDetail(details || 'Initializing Runtime...')
+          timerId = setTimeout(checkStatus, 3000)
+        } else {
+          setSystemStatus('sleeping')
+          setStatusDetail(details || 'Waking AI Service...')
+          timerId = setTimeout(checkStatus, 3000)
+        }
+      } catch (err: any) {
+        if (!active) return
+        const responseData = err.response?.data
+        if (responseData && responseData.status === 'waking') {
+          setSystemStatus('waking')
+          setStatusDetail(responseData.details || 'Initializing Runtime...')
+        } else {
+          setSystemStatus('sleeping')
+          setStatusDetail('Waking AI Service...')
+        }
+        timerId = setTimeout(checkStatus, 3000)
+      }
+    }
+
+    checkStatus()
+
+    return () => {
+      active = false
+      if (timerId) clearTimeout(timerId)
+    }
+  }, [])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -177,14 +225,47 @@ export default function InputForm() {
         </motion.div>
       )}
 
+      {/* Display System Status banner when not ready */}
+      {systemStatus !== 'ready' && (
+        <motion.div 
+          initial={{ opacity: 0, scale: 0.95 }}
+          animate={{ opacity: 1, scale: 1 }}
+          className="mt-4 flex items-start gap-2.5 p-3.5 rounded-xl border border-indigo-500/20 bg-indigo-500/5 text-indigo-300 text-xs sm:text-sm text-left"
+        >
+          <div className="flex-shrink-0 mt-0.5">
+            <span className="relative flex h-2 w-2">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-indigo-400 opacity-75"></span>
+              <span className="relative inline-flex rounded-full h-2 w-2 bg-indigo-500"></span>
+            </span>
+          </div>
+          <div>
+            <span className="font-bold text-white uppercase tracking-wider text-[10px] block mb-0.5">AI Service Status</span>
+            <p className="opacity-90">
+              {systemStatus === 'checking' && 'Verifying runtime status...'}
+              {systemStatus === 'sleeping' && 'Waking AI Service... (Render free-tier cold start, this may take 15–30 seconds)'}
+              {systemStatus === 'waking' && `${statusDetail}...`}
+            </p>
+          </div>
+        </motion.div>
+      )}
+
       {/* Submit Button */}
       <button
         id="submit-btn"
         type="submit"
         className="btn-premium-primary w-full mt-6 flex items-center justify-center gap-2 py-3.5 rounded-xl cursor-pointer"
-        disabled={loading || (tab === 'url' ? !url : !text)}
+        disabled={loading || systemStatus !== 'ready' || (tab === 'url' ? !url : !text)}
       >
-        {loading ? (
+        {systemStatus !== 'ready' ? (
+          <>
+            <span className="premium-loader" />
+            <span>
+              {systemStatus === 'checking' && 'Checking System Status...'}
+              {systemStatus === 'sleeping' && 'Waking AI Service...'}
+              {systemStatus === 'waking' && statusDetail}
+            </span>
+          </>
+        ) : loading ? (
           <>
             <span className="premium-loader" />
             <span>Spawning Fact-Check Agents…</span>

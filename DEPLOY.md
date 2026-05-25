@@ -101,6 +101,31 @@ Run a smoke test to confirm that services are communicating correctly:
 
 ---
 
+## 6. Render Free Tier Keepalive & Cold-Start Mitigation
+
+When deployed to Render's free tier, containers automatically sleep after 15 minutes of inactivity. This results in startup cold starts of 15–30+ seconds. To mitigate this without adding heavy pipeline load or hitting resource quotas, TruthStream implements a dual-layer keepalive and state-aware health architecture.
+
+### Internal Self-Keepalive Loop
+FastAPI spawns an internal background task (`keepalive_loop`) at startup. Every 5 minutes, it sends a lightweight HTTP ping to its local `/health` endpoint. 
+> [!NOTE]
+> Since Render suspends container processes entirely during sleep, this internal task cannot wake up a fully sleeping container. It serves to keep connections warm and prevent sleep *while* the application is currently active.
+
+### Safe External Waking
+To wake up the container or keep it warm externally, configure uptime monitors (e.g., UptimeRobot or cron-job.org) to ping the `/health` endpoint.
+* **Probing Endpoint**: Hitting `GET /health` returns a tiny JSON `{"status": "ok"}` within 10–50ms.
+* **No Overflow Failures**: This endpoint bypasses database queries, Gemini client initialization, and worker queues, preventing verbose logger traces or SSE stream creation. This guarantees that cron-job.org/UptimeRobot will **never** fail with a `"Failed (output too large)"` or timeout error.
+
+### Frontend Boot State Monitoring
+To prevent the client UI from hanging on generic states like "Queued" or "Spawning Fact Check Agents" during cold starts, the frontend actively checks the system state:
+1. When the page loads, the frontend polls `/api/ready` on Spring Boot every 3 seconds.
+2. Spring Boot queries the FastAPI `/ready` endpoint with a strict 2-second timeout, ensuring gateway threads are not locked if the AI service is sleeping.
+3. The UI dynamically displays the true sub-stages during the boot sequence:
+   * **`SERVICE_SLEEPING`** (FastAPI offline/sleeping): Shows `"Waking AI Service..."`
+   * **`SERVICE_WAKING`** (FastAPI booting & prewarming): Shows `"Initializing Runtime..."` or `"Waiting for Warm Workers..."`
+   * **`SERVICE_READY`**: Form inputs are enabled, and the submission button is activated.
+
+---
+
 ## Related Guides
 - [README.md](README.md) — Local development and quick start.
 - [API-KEYS-AND-DEPLOYMENT.md](API-KEYS-AND-DEPLOYMENT.md) — Search configuration and API keys.

@@ -124,6 +124,8 @@ docker compose ps
 | **Frontend UI** | [http://localhost:3000](http://localhost:3000) | Main user interface |
 | **Spring Boot Actuator** | [http://localhost:8080/actuator/health](http://localhost:8080/actuator/health) | Gateway health status |
 | **FastAPI Docs** | [http://localhost:8000/docs](http://localhost:8000/docs) | AI service documentation & testing |
+| **FastAPI Health** | [http://localhost:8000/health](http://localhost:8000/health) | Ultra-lightweight keepalive probe |
+| **FastAPI Readiness** | [http://localhost:8000/ready](http://localhost:8000/ready) | Multi-stage boot state verification |
 | **AI System Health** | [http://localhost:8000/observability/system/health](http://localhost:8000/observability/system/health) | Telemetry metrics & queue depths |
 
 ### 4. Stop the Stack
@@ -199,7 +201,9 @@ The gateway exposes the following endpoints (Spring Security is configured to al
 
 ## Diagnostics & Telemetry
 
-The AI service includes a telemetry router (`ai-service/routers/observability.py`) to monitor system health:
+The AI service includes dedicated observability and status routes:
+- `/health`: Ultra-lightweight health probe returning a tiny `{"status": "ok"}` JSON within 10–50ms. Zero execution overhead, safe for external cron/uptime monitors.
+- `/ready`: Multi-stage readiness probe verifying Redis connectivity, Postgres database pools, worker thread status, and Gemini key prewarming.
 - `/observability/system/health`: Checks database connection, Redis connectivity, Gemini API key health, and queue worker utilization.
 - `/observability/metrics/queue-health`: Returns current message depths for `job_queue_fast` and `job_queue_slow`.
 - `/observability/jobs/{job_id}/metrics`: Measures execution times and latencies for each pipeline stage by parsing database logs.

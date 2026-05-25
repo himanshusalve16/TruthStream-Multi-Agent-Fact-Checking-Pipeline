@@ -15,7 +15,7 @@ DDG_HTML_URL = "https://html.duckduckgo.com/html/"
 BOT_USER_AGENT = "TruthStream-Bot/1.0 (+https://truthstream.app/bot)"
 
 
-async def search_web(query: str, max_results: int = 10, redis=None) -> List[dict]:
+async def search_web(query: str, max_results: int = 10, redis=None, http_client: Optional[httpx.AsyncClient] = None) -> List[dict]:
     """
     Search using SerpAPI when configured, otherwise DuckDuckGo.
     If SerpAPI fails or returns nothing, fall back to DuckDuckGo (no API key).
@@ -37,13 +37,13 @@ async def search_web(query: str, max_results: int = 10, redis=None) -> List[dict
 
     results: List[dict] = []
     if _serpapi_configured():
-        results = await _search_serpapi(query, max_results)
+        results = await _search_serpapi(query, max_results, http_client)
     if not results:
         if _serpapi_configured():
             logger.info("SerpAPI returned no results, falling back to DuckDuckGo")
         else:
             logger.info("SerpAPI not configured, using DuckDuckGo search")
-        results = await _search_duckduckgo(query, max_results)
+        results = await _search_duckduckgo(query, max_results, http_client)
 
     if redis and results:
         try:
@@ -61,32 +61,41 @@ def _serpapi_configured() -> bool:
     return bool(key and key not in ("replace-me", ""))
 
 
-async def _search_serpapi(query: str, max_results: int) -> List[dict]:
+async def _search_serpapi(query: str, max_results: int, http_client: Optional[httpx.AsyncClient] = None) -> List[dict]:
     try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            response = await client.get(SERPAPI_URL, params={
+        if http_client is not None:
+            response = await http_client.get(SERPAPI_URL, params={
                 "q": query,
                 "api_key": settings.serpapi_key,
                 "num": max_results,
                 "hl": "en",
                 "gl": "us",
-            })
-            if response.status_code == 429:
-                logger.warning("SerpAPI quota exceeded")
-                return []
-            response.raise_for_status()
-            data = response.json()
-            organic = data.get("organic_results", [])
-            return [
-                {
-                    "url": r.get("link", ""),
-                    "title": r.get("title", ""),
-                    "snippet": r.get("snippet", ""),
-                    "rank": i + 1,
-                }
-                for i, r in enumerate(organic[:max_results])
-                if r.get("link")
-            ]
+            }, timeout=15.0)
+        else:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                response = await client.get(SERPAPI_URL, params={
+                    "q": query,
+                    "api_key": settings.serpapi_key,
+                    "num": max_results,
+                    "hl": "en",
+                    "gl": "us",
+                })
+        if response.status_code == 429:
+            logger.warning("SerpAPI quota exceeded")
+            return []
+        response.raise_for_status()
+        data = response.json()
+        organic = data.get("organic_results", [])
+        return [
+            {
+                "url": r.get("link", ""),
+                "title": r.get("title", ""),
+                "snippet": r.get("snippet", ""),
+                "rank": i + 1,
+            }
+            for i, r in enumerate(organic[:max_results])
+            if r.get("link")
+        ]
     except Exception as e:
         logger.error("SerpAPI search failed: %s", e)
         return []
@@ -105,46 +114,57 @@ def _normalize_ddg_url(href: str) -> str:
     return href
 
 
-async def _search_duckduckgo(query: str, max_results: int) -> List[dict]:
+async def _search_duckduckgo(query: str, max_results: int, http_client: Optional[httpx.AsyncClient] = None) -> List[dict]:
     """
     Free web search via DuckDuckGo HTML endpoint — no API key required.
     Uses httpx + BeautifulSoup (same stack as the article scraper).
     """
     try:
-        async with httpx.AsyncClient(timeout=8.0, follow_redirects=True) as client:
-            response = await client.post(
+        if http_client is not None:
+            response = await http_client.post(
                 DDG_HTML_URL,
                 data={"q": query, "b": ""},
                 headers={
                     "User-Agent": BOT_USER_AGENT,
                     "Content-Type": "application/x-www-form-urlencoded",
                 },
+                timeout=8.0,
             )
-            if response.status_code != 200:
-                logger.warning("DuckDuckGo HTTP %s", response.status_code)
-                return []
+        else:
+            async with httpx.AsyncClient(timeout=8.0, follow_redirects=True) as client:
+                response = await client.post(
+                    DDG_HTML_URL,
+                    data={"q": query, "b": ""},
+                    headers={
+                        "User-Agent": BOT_USER_AGENT,
+                        "Content-Type": "application/x-www-form-urlencoded",
+                    },
+                )
+        if response.status_code != 200:
+            logger.warning("DuckDuckGo HTTP %s", response.status_code)
+            return []
 
-            soup = BeautifulSoup(response.text, "lxml")
-            results: List[dict] = []
+        soup = BeautifulSoup(response.text, "lxml")
+        results: List[dict] = []
 
-            for block in soup.select("div.result"):
-                if len(results) >= max_results:
-                    break
-                link_el = block.select_one("a.result__a")
-                snippet_el = block.select_one("a.result__snippet, div.result__snippet")
-                if not link_el:
-                    continue
-                url = _normalize_ddg_url(link_el.get("href", ""))
-                if not url.startswith("http"):
-                    continue
-                results.append({
-                    "url": url,
-                    "title": link_el.get_text(strip=True),
-                    "snippet": snippet_el.get_text(strip=True) if snippet_el else "",
-                    "rank": len(results) + 1,
-                })
+        for block in soup.select("div.result"):
+            if len(results) >= max_results:
+                break
+            link_el = block.select_one("a.result__a")
+            snippet_el = block.select_one("a.result__snippet, div.result__snippet")
+            if not link_el:
+                continue
+            url = _normalize_ddg_url(link_el.get("href", ""))
+            if not url.startswith("http"):
+                continue
+            results.append({
+                "url": url,
+                "title": link_el.get_text(strip=True),
+                "snippet": snippet_el.get_text(strip=True) if snippet_el else "",
+                "rank": len(results) + 1,
+            })
 
-            return results
+        return results
     except Exception as e:
         logger.error("DuckDuckGo search failed: %s", e)
         return []

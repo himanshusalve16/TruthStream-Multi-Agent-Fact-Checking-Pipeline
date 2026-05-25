@@ -69,7 +69,7 @@ async def find_sources(
     Returns ClaimSourcesResult.
     """
     query = build_claim_query(claim.text, claim.claim_type)
-    results = await search_web(query, max_results=10, redis=redis)
+    results = await search_web(query, max_results=10, redis=redis, http_client=http_client)
 
     # Rerank snippets by lexical overlap
     results = rank_snippets_by_overlap(claim.text, results)

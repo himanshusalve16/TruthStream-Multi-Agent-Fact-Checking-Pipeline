@@ -60,4 +60,49 @@ public class FastApiClient {
                                 jobId, response != null ? response.getStatusCode() : "null")
                 );
     }
+
+    /**
+     * Check if the FastAPI service is ready.
+     */
+    public Mono<String> checkReady() {
+        return webClient.get()
+                .uri("/ready")
+                .retrieve()
+                .bodyToMono(Map.class)
+                .map(body -> {
+                    if (body != null && "ready".equals(body.get("status"))) {
+                        return "ready";
+                    }
+                    if (body != null && "waking".equals(body.get("status"))) {
+                        return "waking";
+                    }
+                    return "sleeping";
+                })
+                .timeout(Duration.ofSeconds(2))
+                .onErrorResume(e -> {
+                    log.debug("FastAPI /ready not responding: {}", e.getMessage());
+                    return Mono.just("sleeping");
+                });
+    }
+
+    /**
+     * Check if the FastAPI service is healthy.
+     */
+    public Mono<String> checkHealth() {
+        return webClient.get()
+                .uri("/health")
+                .retrieve()
+                .bodyToMono(Map.class)
+                .map(body -> {
+                    if (body != null && "ok".equals(body.get("status"))) {
+                        return "healthy";
+                    }
+                    return "sleeping";
+                })
+                .timeout(Duration.ofSeconds(2))
+                .onErrorResume(e -> {
+                    log.debug("FastAPI /health not responding: {}", e.getMessage());
+                    return Mono.just("sleeping");
+                });
+    }
 }

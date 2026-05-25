@@ -63,9 +63,11 @@ sequenceDiagram
   end
   AI->>DB: Execute startup watchdog (Mark old pending/processing jobs as FAILED)
   AI->>AI: Prewarm HTTP client session
-  AI->>AI: Prewarm Gemini API keys (Validate client & warm TLS handshakes)
+  AI->>AI: Prewarm Gemini API keys (Validate & warm via aio.models.get)
+  AI->>AI: Preload prompt templates & compile agents
   AI->>AI: Spawn background Watchdog & Cancellation listeners
   AI->>AI: Spawn 3 fast & 2 slow queue workers
+  AI->>AI: Spawn internal keepalive loop task
   AI-->>AI: Ready on :8000
 
   Note over BE: Depends on DB, Redis healthy & AI started
@@ -92,9 +94,11 @@ sequenceDiagram
   - **Watchdog Sweep**: Executes `cleanup_stuck_jobs(pool)`, querying the database to sweep and transition any jobs left in `PENDING` or `PROCESSING` states from a previous session to `FAILED` (error: "Job terminated due to system restart.").
   - **Redis Connection**: Initiates `_connect_redis_with_retry` (retries up to 8 times with 2.0s delays).
   - **HTTP Client**: Prewarms a single global `httpx.AsyncClient` with custom bot headers, connection pooling, and redirect limits.
-  - **Gemini client prewarming**: Rotates through all configured API keys (`gemini_api_key_1` to `gemini_api_key_4`) and makes a model query list to validate each key, warm up DNS, and pre-establish TLS handshakes.
+  - **Gemini Client Prewarming**: Rotates through all configured API keys (`gemini_api_key_1` to `gemini_api_key_4`) and calls the async `aio.models.get` method for the configured model to validate the key, warm up DNS, and pre-establish connection pools (avoiding the deprecated `models.list()` which returned `501 UNIMPLEMENTED`).
+  - **Prompt Preloading**: Imports agent files (`bias_scorer`, `extractor`, `judge`, etc.) to parse and cache static prompt templates at startup.
   - **Background Watchdog & Cancellation Listener**: Spawns `stalled_jobs_watchdog` and `cancellation_listener` as concurrent `asyncio` tasks.
   - **Worker Tasks**: Spawns 3 fast workers and 2 slow workers as background queue consumers.
+  - **Internal Keepalive Loop**: Spawns a background self-waking routine to ping `/health` every 5 minutes to maintain hot pools and warm runtime state.
 
 ### 3. API Gateway Boot (`backend`)
 - **Spring Boot 3.2 Lifespan**:
