@@ -88,4 +88,13 @@ public class JobController {
         log.info("SSE stream opened for job {} by user {}", jobId, userId);
         return sseService.register(jobId);
     }
+
+    @PostMapping("/{jobId}/cancel")
+    public ResponseEntity<JobResponse> cancelJob(
+            @PathVariable UUID jobId) {
+        UUID userId = getDevUserId();
+        JobResponse response = jobService.cancelJob(jobId, userId);
+        sseService.publishEvent(jobId, "error", Map.of("message", "Cancelled by user"));
+        return ResponseEntity.ok(response);
+    }
 }

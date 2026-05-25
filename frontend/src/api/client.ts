@@ -49,6 +49,8 @@ export const jobs = {
     client.get<{ job_id: string; sources_by_claim: Record<string, SourceDto[]> }>(
       `/api/jobs/${jobId}/sources`
     ),
+  cancel: (jobId: string) =>
+    client.post<JobStatus>(`/api/jobs/${jobId}/cancel`),
 }
 
 export interface SourceDto {

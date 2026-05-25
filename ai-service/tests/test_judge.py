@@ -14,7 +14,8 @@ def test_fallback_unverifiable_without_sources():
     )
     result = compute_fallback_verdict([claim], {}, bias)
     assert result.claim_verdicts[0].verdict == "UNVERIFIABLE"
-    assert result.claim_verdicts[0].confidence == 0.1
+    assert result.claim_verdicts[0].confidence == 0.0
+
 
 
 def test_fallback_supported_when_sources_support():

@@ -14,6 +14,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
+import org.springframework.data.redis.core.RedisTemplate;
 
 import java.time.OffsetDateTime;
 import java.util.List;
@@ -30,6 +31,7 @@ public class JobService {
     private final UserRepository userRepository;
     private final FastApiClient fastApiClient;
     private final RateLimitService rateLimitService;
+    private final RedisTemplate<String, String> redisTemplate;
 
     /**
      * Create a new fact-checking job. Enforces rate limits and duplicate URL detection.
@@ -139,5 +141,29 @@ public class JobService {
                 .inputUrl(job.getInputUrl())
                 .errorMessage(job.getErrorMessage())
                 .build();
+    }
+
+    @Transactional
+    public JobResponse cancelJob(UUID jobId, UUID userId) {
+        Job job = jobRepository.findById(jobId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Job not found"));
+
+        if (!job.getUser().getId().equals(userId)) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Access denied");
+        }
+
+        if ("COMPLETE".equals(job.getStatus()) || "FAILED".equals(job.getStatus())) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Job already finished and cannot be cancelled");
+        }
+
+        log.info("Cancelling job {} by user {}", jobId, userId);
+        job.setStatus("FAILED");
+        job.setErrorMessage("Cancelled by user");
+        job = jobRepository.save(job);
+
+        // Publish to Redis channel to trigger worker cancellation
+        redisTemplate.convertAndSend("job:cancel:events", jobId.toString());
+
+        return toJobResponse(job);
     }
 }

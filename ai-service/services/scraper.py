@@ -36,7 +36,7 @@ def _is_private_ip(ip_str: str) -> bool:
         return True  # Fail safe
 
 
-def _validate_url(url: str) -> bool:
+async def _validate_url(url: str) -> bool:
     """SSRF protection: validate scheme and resolve to public IP."""
     try:
         parsed = urlparse(url)
@@ -49,7 +49,8 @@ def _validate_url(url: str) -> bool:
         if not hostname:
             return False
         try:
-            ip = socket.gethostbyname(hostname)
+            loop = asyncio.get_running_loop()
+            ip = await loop.run_in_executor(None, socket.gethostbyname, hostname)
             if _is_private_ip(ip):
                 logger.warning("SSRF blocked: %s resolves to private IP %s", url, ip)
                 return False
@@ -97,7 +98,7 @@ async def scrape_url(
     fetch_status: success|timeout|blocked|empty|ssrf_blocked|error
     Uses Redis to cache results (including status) to prevent repeating slow requests.
     """
-    if not _validate_url(url):
+    if not await _validate_url(url):
         return "", "ssrf_blocked"
 
     # Check Redis cache
@@ -133,7 +134,8 @@ async def scrape_url(
                 if "text" not in content_type and "html" not in content_type:
                     text, status = "", "non_html"
                 else:
-                    text = _extract_text(response.text, url)
+                    loop = asyncio.get_running_loop()
+                    text = await loop.run_in_executor(None, _extract_text, response.text, url)
                     if not text or len(text) < 50:
                         text, status = "", "empty"
                     else:
@@ -178,6 +180,14 @@ async def scrape_url(
     return "", status
 
 
+def _parse_and_clean_article(html: str) -> str:
+    soup = BeautifulSoup(html, "lxml")
+    for tag in soup.find_all(["nav", "footer", "header", "aside",
+                              "script", "style", "noscript"]):
+        tag.decompose()
+    return soup.get_text(separator=" ", strip=True)
+
+
 async def _fetch_article_url_once(url: str, http_client: Optional[httpx.AsyncClient] = None) -> tuple[str, str]:
     """Single attempt to fetch article text."""
     if http_client is not None:
@@ -193,12 +203,8 @@ async def _fetch_article_url_once(url: str, http_client: Optional[httpx.AsyncCli
             response = await client.get(url)
             response.raise_for_status()
 
-    soup = BeautifulSoup(response.text, "lxml")
-    for tag in soup.find_all(["nav", "footer", "header", "aside",
-                              "script", "style", "noscript"]):
-        tag.decompose()
-
-    text = soup.get_text(separator=" ", strip=True)
+    loop = asyncio.get_running_loop()
+    text = await loop.run_in_executor(None, _parse_and_clean_article, response.text)
     return text, "success"
 
 
@@ -207,7 +213,7 @@ async def fetch_article_url(url: str, http_client: Optional[httpx.AsyncClient] =
     Fetch a full article URL for analysis with bounded, rapid retries.
     Returns (raw_html_text, fetch_status).
     """
-    if not _validate_url(url):
+    if not await _validate_url(url):
         raise ValueError(f"URL failed SSRF validation: {url}")
 
     last_error: Exception | None = None

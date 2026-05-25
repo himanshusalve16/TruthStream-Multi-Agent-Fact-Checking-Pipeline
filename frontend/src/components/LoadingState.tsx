@@ -133,6 +133,19 @@ export default function LoadingState({ stage, message }: Props) {
   const currentIdx = STAGE_ORDER.indexOf(normalizedStage)
   const isTerminalState = stage === 'complete' || stage === 'completed' || stage === 'partial_completed' || stage === 'failed' || stage === 'error'
 
+  const isFastPath = message?.toLowerCase().includes('fast-path') || message?.toLowerCase().includes('fast-track')
+  const isStandardPath = message?.toLowerCase().includes('standard path')
+
+  const isNodeBypassed = (nodeName: string) => {
+    if (nodeName === 'Crawler') {
+      return isStandardPath || isFastPath
+    }
+    if (nodeName === 'Judge') {
+      return isFastPath
+    }
+    return false
+  }
+
   const [logs, setLogs] = useState<string[]>([])
   const [currentLogIdx, setCurrentLogIdx] = useState(0)
   const [stageTimer, setStageTimer] = useState(0)
@@ -217,6 +230,23 @@ export default function LoadingState({ stage, message }: Props) {
         </div>
       )}
 
+      {/* Fast-Track / Scraper Bypass Status Banner */}
+      {(isFastPath || isStandardPath) && (
+        <div className="flex items-center gap-3 px-4 py-3 rounded-xl border border-indigo-500/20 bg-indigo-500/5 text-indigo-300 text-xs font-medium text-left animate-fade-in-up">
+          <span className="text-base select-none">⚡</span>
+          <div className="flex-1">
+            <p className="font-bold text-indigo-200">
+              {isFastPath ? "Fast-Track Pipeline Enabled" : "Snippet Reranking Enabled (Scraper Bypassed)"}
+            </p>
+            <p className="opacity-90 mt-0.5">
+              {isFastPath 
+                ? "Running direct single-pass analysis using lexical reranking to bypass crawler/judge and speed up processing by 90%."
+                : "Standard path detected. Bypassing slow full-text URL crawling and utilizing local snippet lexical reranking."}
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* Dynamic Multi-Agent Orchestration Map */}
       <div className="glass-card p-6 border border-border bg-bg-glass backdrop-blur-xl rounded-2xl shadow-card relative">
         <div className="flex items-center justify-between mb-6">
@@ -256,24 +286,50 @@ export default function LoadingState({ stage, message }: Props) {
               const isPassed = currentIdx > maxCurrentNodeStageIdx
               const isActive = node.stages.includes(normalizedStage)
               
+              const isLineBypassed = isNodeBypassed(node.name) || isNodeBypassed(nextNode.name)
+              
               return (
                 <path
                   key={`line-${idx}`}
                   d={`M ${node.x + 20} ${node.y} L ${nextNode.x - 20} ${nextNode.y}`}
-                  stroke={isPassed ? '#10b981' : isActive ? '#6366f1' : 'rgba(255, 255, 255, 0.05)'}
+                  stroke={isLineBypassed ? 'rgba(255, 255, 255, 0.03)' : isPassed ? '#10b981' : isActive ? '#6366f1' : 'rgba(255, 255, 255, 0.05)'}
                   strokeWidth={2}
-                  className={isActive ? 'svg-flow-path' : ''}
+                  strokeDasharray={isLineBypassed ? '3, 3' : undefined}
+                  className={isActive && !isLineBypassed ? 'svg-flow-path' : ''}
                   style={{ transition: 'stroke 0.4s ease' }}
                 />
               )
             })}
 
+            {/* Direct Bypass Curves */}
+            {isStandardPath && (
+              <path
+                d="M 220 60 Q 340 110 460 60"
+                fill="none"
+                stroke={currentIdx > 8 ? '#10b981' : currentIdx === 8 ? '#6366f1' : 'rgba(99, 102, 241, 0.15)'}
+                strokeWidth={2}
+                className={currentIdx === 8 ? 'svg-flow-path' : ''}
+                style={{ transition: 'stroke 0.4s ease' }}
+              />
+            )}
+            {isFastPath && (
+              <path
+                d="M 220 60 Q 410 120 600 60"
+                fill="none"
+                stroke={currentIdx > 9 ? '#10b981' : currentIdx >= 7 && currentIdx <= 9 ? '#6366f1' : 'rgba(99, 102, 241, 0.15)'}
+                strokeWidth={2}
+                className={currentIdx >= 7 && currentIdx <= 9 ? 'svg-flow-path' : ''}
+                style={{ transition: 'stroke 0.4s ease' }}
+              />
+            )}
+
             {/* Agent Nodes rendering */}
             {nodes.map((node) => {
               const stageIdxs = node.stages.map(s => STAGE_ORDER.indexOf(s as Stage))
               const maxStageIdx = Math.max(...stageIdxs)
-              const isFinished = currentIdx > maxStageIdx || (isTerminalState && node.stages.includes('completed'))
-              const isActive = node.stages.includes(normalizedStage)
+              const isBypassed = isNodeBypassed(node.name)
+              const isFinished = !isBypassed && (currentIdx > maxStageIdx || (isTerminalState && node.stages.includes('completed')))
+              const isActive = !isBypassed && node.stages.includes(normalizedStage)
 
               const activeColor = node.color
               
@@ -294,17 +350,18 @@ export default function LoadingState({ stage, message }: Props) {
                   {/* Node Circle */}
                   <circle
                     r={20}
-                    fill={isFinished ? '#10b981' : isActive ? activeColor : 'rgba(15, 23, 42, 0.8)'}
-                    stroke={isFinished ? '#10b981' : isActive ? '#ffffff' : 'rgba(255, 255, 255, 0.08)'}
+                    fill={isBypassed ? 'rgba(30, 41, 59, 0.2)' : isFinished ? '#10b981' : isActive ? activeColor : 'rgba(15, 23, 42, 0.8)'}
+                    stroke={isBypassed ? 'rgba(255, 255, 255, 0.04)' : isFinished ? '#10b981' : isActive ? '#ffffff' : 'rgba(255, 255, 255, 0.08)'}
                     strokeWidth={isActive ? 2 : 1.5}
+                    strokeDasharray={isBypassed ? '3, 3' : undefined}
                     filter={isActive ? 'url(#agent-active-glow)' : 'none'}
                     style={{ transition: 'fill 0.4s ease, stroke 0.4s ease' }}
                   />
 
                   {/* Icon */}
-                  <g fill="#ffffff" stroke="#ffffff" className="text-white">
+                  <g fill="#ffffff" stroke="#ffffff" className={isBypassed ? "opacity-20" : "text-white"}>
                     <foreignObject x="-8" y="-8" width="16" height="16">
-                      <div className="text-white flex items-center justify-center">
+                      <div className="flex items-center justify-center">
                         {STAGES.find(s => s.key === node.stages[0])?.icon || <Globe size={15} />}
                       </div>
                     </foreignObject>
@@ -314,7 +371,7 @@ export default function LoadingState({ stage, message }: Props) {
                   <text
                     y={36}
                     textAnchor="middle"
-                    fill={isFinished ? '#10b981' : isActive ? '#ffffff' : '#6b7280'}
+                    fill={isBypassed ? '#475569' : isFinished ? '#10b981' : isActive ? '#ffffff' : '#6b7280'}
                     fontSize={10}
                     fontWeight="700"
                     fontFamily="Inter, sans-serif"
@@ -322,6 +379,19 @@ export default function LoadingState({ stage, message }: Props) {
                   >
                     {node.name}
                   </text>
+
+                  {isBypassed && (
+                    <text
+                      y={48}
+                      textAnchor="middle"
+                      fill="#475569"
+                      fontSize={8}
+                      fontWeight="500"
+                      fontFamily="Inter, sans-serif"
+                    >
+                      (Bypassed)
+                    </text>
+                  )}
                 </g>
               )
             })}

@@ -30,6 +30,7 @@ class RateLimitServiceTest {
     @Test
     void checkJobRateLimit_throwsWhenExceeded() {
         ReflectionTestUtils.setField(rateLimitService, "maxJobsPerHour", 10);
+        ReflectionTestUtils.setField(rateLimitService, "enabled", true);
         UUID userId = UUID.randomUUID();
         when(redisTemplate.opsForValue()).thenReturn(valueOps);
         when(valueOps.get("ratelimit:jobs:" + userId)).thenReturn("10");

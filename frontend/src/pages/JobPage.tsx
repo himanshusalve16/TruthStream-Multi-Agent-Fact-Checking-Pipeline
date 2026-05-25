@@ -9,6 +9,7 @@ import {
 import { useJobContext } from '../context/JobContext'
 import { useJobStream } from '../hooks/useJobStream'
 import { useJobHydration } from '../hooks/useJobHydration'
+import { jobs } from '../api/client'
 import LoadingState from '../components/LoadingState'
 import ErrorBanner from '../components/ErrorBanner'
 import VerdictBanner from '../components/VerdictBanner'
@@ -21,6 +22,21 @@ export default function JobPage() {
   const { state, dispatch } = useJobContext()
   const navigate = useNavigate()
   const [copied, setCopied] = useState(false)
+  const [cancelling, setCancelling] = useState(false)
+
+  const handleCancel = async () => {
+    if (!id) return
+    setCancelling(true)
+    try {
+      await jobs.cancel(id)
+      dispatch({ type: 'SET_STAGE', stage: 'failed', message: 'Cancelled by user' })
+      dispatch({ type: 'SET_ERROR', error: 'Cancelled by user' })
+    } catch (err: any) {
+      console.error('Failed to cancel job:', err)
+    } finally {
+      setCancelling(false)
+    }
+  }
 
   // Ensure jobId is set if navigated to directly
   useEffect(() => {
@@ -121,13 +137,35 @@ export default function JobPage() {
             </div>
           </div>
 
-          {/* Status Indicator */}
-          <div className="flex items-center gap-2 bg-slate-950 px-3 py-1.5 rounded-lg border border-white/[0.04] self-start sm:self-auto">
-            <div className={`w-2 h-2 rounded-full ${
-              isError ? 'bg-red-500' :
-              isComplete ? 'bg-emerald-500' : 'bg-indigo-500 animate-pulse'
-            }`} />
-            <span className="font-mono text-xs font-bold text-white uppercase tracking-wider">{getStageLabel()}</span>
+          {/* Status Indicator & Cancel Button */}
+          <div className="flex items-center gap-3 self-start sm:self-auto">
+            <div className="flex items-center gap-2 bg-slate-950 px-3 py-1.5 rounded-lg border border-white/[0.04]">
+              <div className={`w-2 h-2 rounded-full ${
+                isError ? 'bg-red-500' :
+                isComplete ? 'bg-emerald-500' : 'bg-indigo-500 animate-pulse'
+              }`} />
+              <span className="font-mono text-xs font-bold text-white uppercase tracking-wider">{getStageLabel()}</span>
+            </div>
+
+            {!isComplete && !isError && state.stage !== 'idle' && (
+              <button
+                onClick={handleCancel}
+                disabled={cancelling}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-lg border border-red-500/20 bg-red-500/5 hover:bg-red-500/10 hover:border-red-500/40 text-red-400 hover:text-red-300 transition-all duration-200 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
+              >
+                {cancelling ? (
+                  <>
+                    <span className="w-2.5 h-2.5 border-2 border-red-500/30 border-t-red-400 rounded-full animate-spin" />
+                    <span>Cancelling...</span>
+                  </>
+                ) : (
+                  <>
+                    <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" />
+                    <span>Cancel</span>
+                  </>
+                )}
+              </button>
+            )}
           </div>
         </div>
 

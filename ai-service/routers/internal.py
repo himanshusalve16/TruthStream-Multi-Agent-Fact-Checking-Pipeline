@@ -25,9 +25,19 @@ async def dispatch_job(
         await queries.insert_audit_log(pool, body.job_id, body.user_id, "QUEUE_ENQUEUED", {"elapsed_seconds": 0.0})
         logger.info("[LIFECYCLE] [JOB_ID: %s] [ACTION: QUEUE_ENQUEUED]", body.job_id)
 
-        await request.app.state.redis.lpush("job_queue", body.job_id)
-        logger.info("Job %s queued from Spring Boot", body.job_id)
+        # Determine target queue based on input type and length
+        is_fast_path = False
+        if body.input_type == "text" and body.text:
+            word_count = len(body.text.split())
+            if word_count < 600:
+                is_fast_path = True
+
+        target_queue = "job_queue_fast" if is_fast_path else "job_queue_slow"
+
+        await request.app.state.redis.lpush(target_queue, body.job_id)
+        logger.info("Job %s queued to %s from Spring Boot", body.job_id, target_queue)
         return {"job_id": body.job_id, "queued": True}
     except Exception as e:
         logger.error("Failed to queue job %s: %s", body.job_id, e)
         raise HTTPException(status_code=500, detail="Failed to queue job")
+

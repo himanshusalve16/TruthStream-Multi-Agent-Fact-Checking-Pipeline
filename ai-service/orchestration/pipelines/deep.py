@@ -128,7 +128,8 @@ async def run_deep_path_pipeline_flow(
     source_results_raw = []
     bias_result = None
     try:
-        source_tasks = [find_sources(claim, redis, max_sources=3, http_client=http_client) for claim in inserted_claims]
+        source_tasks = [find_sources(claim, redis, max_sources=3, http_client=http_client, scrape_full_text=True) for claim in inserted_claims]
+
         bias_task = score_bias(cleaned, input_url)
 
         sourcing_start = time.perf_counter()

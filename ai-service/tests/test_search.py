@@ -69,3 +69,19 @@ async def test_duckduckgo_parses_html_results():
     assert results[0]["url"] == "https://example.com/news"
     assert results[0]["title"] == "Example headline"
     assert "summary" in results[0]["snippet"]
+
+
+def test_rank_snippets_by_overlap():
+    from agents.source_finder import rank_snippets_by_overlap
+    claim = "The energy efficiency increased by fifteen percent"
+    results = [
+        {"url": "https://a.com", "title": "Random title", "snippet": "Unrelated snippet details about weather.", "rank": 1},
+        {"url": "https://b.com", "title": "Energy efficiency metrics", "snippet": "New reports show energy efficiency increased by 15 percent over the last decade.", "rank": 2},
+    ]
+    ranked = rank_snippets_by_overlap(claim, results)
+    
+    assert len(ranked) == 2
+    # The snippet with "energy efficiency" and "increased" should rank first (rank 2 results first)
+    assert ranked[0]["url"] == "https://b.com"
+    assert ranked[1]["url"] == "https://a.com"
+

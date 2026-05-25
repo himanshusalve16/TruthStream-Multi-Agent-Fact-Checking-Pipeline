@@ -12,6 +12,7 @@ import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.web.server.ResponseStatusException;
+import org.springframework.data.redis.core.RedisTemplate;
 
 import java.time.OffsetDateTime;
 import java.util.Optional;
@@ -32,6 +33,8 @@ class JobServiceTest {
     private FastApiClient fastApiClient;
     @Mock
     private RateLimitService rateLimitService;
+    @Mock
+    private RedisTemplate<String, String> redisTemplate;
 
     @InjectMocks
     private JobService jobService;
@@ -69,5 +72,28 @@ class JobServiceTest {
 
         assertThrows(ResponseStatusException.class, () -> jobService.createJob(userId, request));
         verify(rateLimitService, never()).recordJobSubmission(any());
+    }
+
+    @Test
+    void cancelJob_cancelsActiveJobAndPublishesToRedis() {
+        UUID userId = UUID.randomUUID();
+        UUID jobId = UUID.randomUUID();
+        User user = new User();
+        user.setId(userId);
+
+        Job activeJob = Job.builder()
+                .id(jobId)
+                .status("PROCESSING")
+                .user(user)
+                .build();
+
+        when(jobRepository.findById(jobId)).thenReturn(Optional.of(activeJob));
+        when(jobRepository.save(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+        JobResponse response = jobService.cancelJob(jobId, userId);
+
+        assertEquals("FAILED", response.getStatus());
+        assertEquals("Cancelled by user", response.getErrorMessage());
+        verify(redisTemplate).convertAndSend(eq("job:cancel:events"), eq(jobId.toString()));
     }
 }

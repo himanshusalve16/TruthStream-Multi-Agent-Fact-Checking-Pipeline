@@ -13,7 +13,7 @@ import httpx
 from config import settings
 from db.connection import init_db_pool, close_db_pool
 from routers import internal
-from orchestration import cleanup_stuck_jobs, job_worker, stalled_jobs_watchdog
+from orchestration import cleanup_stuck_jobs, job_worker, stalled_jobs_watchdog, cancellation_listener
 
 logging.basicConfig(
     level=logging.INFO,
@@ -21,7 +21,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger("truthstream.ai")
 
-NUM_WORKERS = 3
+NUM_FAST_WORKERS = 3
+NUM_SLOW_WORKERS = 2
 
 # ──────────────────────────────────────────────────────────────
 # Startup helpers with retry
@@ -132,11 +133,19 @@ async def lifespan(app: FastAPI):
     logger.info("[STARTUP] Starting background stalled jobs watchdog...")
     app.state.watchdog_task = asyncio.create_task(stalled_jobs_watchdog(app))
 
-    logger.info("[STARTUP] Starting %d async queue workers...", NUM_WORKERS)
-    app.state.workers = [
-        asyncio.create_task(job_worker(app), name=f"worker-{i}")
-        for i in range(NUM_WORKERS)
-    ]
+    logger.info("[STARTUP] Starting Redis cancellation listener...")
+    app.state.cancel_listener_task = asyncio.create_task(cancellation_listener(app))
+
+    logger.info("[STARTUP] Starting %d fast and %d slow async queue workers...", NUM_FAST_WORKERS, NUM_SLOW_WORKERS)
+    app.state.workers = []
+    for i in range(NUM_FAST_WORKERS):
+        app.state.workers.append(
+            asyncio.create_task(job_worker(app, "job_queue_fast"), name=f"fast-worker-{i}")
+        )
+    for i in range(NUM_SLOW_WORKERS):
+        app.state.workers.append(
+            asyncio.create_task(job_worker(app, "job_queue_slow"), name=f"slow-worker-{i}")
+        )
     logger.info("[STARTUP] Queue consumer background task(s) spawned successfully.")
 
     logger.info("AI service ready and listening.")
@@ -151,6 +160,10 @@ async def lifespan(app: FastAPI):
     logger.info("Shutting down watchdog task...")
     app.state.watchdog_task.cancel()
     await asyncio.gather(app.state.watchdog_task, return_exceptions=True)
+
+    logger.info("Shutting down cancellation listener...")
+    app.state.cancel_listener_task.cancel()
+    await asyncio.gather(app.state.cancel_listener_task, return_exceptions=True)
 
     await app.state.http_client.aclose()
     await close_db_pool(app.state.db_pool)
