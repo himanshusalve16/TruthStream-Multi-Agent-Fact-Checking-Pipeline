@@ -1,7 +1,10 @@
-"""Gemini service client manager and error handling/fallback logic."""
+"""Gemini service client manager and error handling/quota governance."""
 import asyncio
 import logging
+import os
+import time
 from typing import Callable, Any
+from contextvars import ContextVar
 import httpx
 from google import genai
 from google.genai import errors
@@ -9,12 +12,20 @@ from config import settings
 
 logger = logging.getLogger(__name__)
 
+# ContextVar to hold the job ID and the job call counter for request budgeting
+job_id_var: ContextVar[str | None] = ContextVar("job_id", default=None)
+job_call_counter: ContextVar[int | None] = ContextVar("job_call_counter", default=None)
+
+# Global tracking of active Gemini API calls
+active_gemini_calls = 0
 
 class GeminiClientManager:
     def __init__(self):
         self._keys = []
         self._current_index = 0
         self._clients = {}
+        self._cooldowns = {}  # key -> timestamp when cooldown expires
+        self._circuit_breaker_until = 0.0
         self.reload_keys()
 
     def reload_keys(self):
@@ -39,17 +50,71 @@ class GeminiClientManager:
             self._keys = [settings.gemini_api_key_1]
 
         self._current_index = 0
+        self._cooldowns = {}
+        self._circuit_breaker_until = 0.0
         logger.info("GeminiClientManager initialized with %d keys", len(self._keys))
+
+    def is_degraded(self) -> bool:
+        """Returns True if the global circuit breaker is active or all keys are in cooldown."""
+        now = time.time()
+        if now < self._circuit_breaker_until:
+            return True
+        if not self._keys:
+            return True
+        
+        # Check if all keys are currently in cooldown
+        all_in_cooldown = True
+        for key in self._keys:
+            cooldown_until = self._cooldowns.get(key, 0.0)
+            if now >= cooldown_until:
+                all_in_cooldown = False
+                break
+        
+        if all_in_cooldown:
+            self._circuit_breaker_until = now + 60.0
+            logger.error(
+                "[INSTRUMENTATION] QUOTA_COOLDOWN_ACTIVATED | All %d Gemini keys are in cooldown. Circuit breaker activated for 60s.",
+                len(self._keys)
+            )
+            return True
+            
+        return False
+
+    def mark_cooldown(self, key: str):
+        """Put a key into cooldown for 60 seconds."""
+        self._cooldowns[key] = time.time() + 60.0
+        try:
+            slot_idx = self._keys.index(key)
+        except ValueError:
+            slot_idx = -1
+        logger.warning(
+            "[INSTRUMENTATION] KEY_COOLDOWN_ACTIVATED | Key slot %d put in cooldown for 60s.",
+            slot_idx
+        )
 
     def get_client(self) -> genai.Client:
         if not self._keys:
-            # Will default to settings.gemini_api_key_1 or throw
-            return genai.Client(api_key=settings.gemini_api_key_1)
+            raise RuntimeError("No Gemini API keys configured.")
 
-        key = self._keys[self._current_index]
-        if key not in self._clients:
-            self._clients[key] = genai.Client(api_key=key)
-        return self._clients[key]
+        # Check circuit breaker / cooldowns
+        if self.is_degraded():
+            raise RuntimeError("AI service capacity is currently degraded. Circuit breaker active.")
+
+        now = time.time()
+        total_keys = len(self._keys)
+        for i in range(total_keys):
+            idx = (self._current_index + i) % total_keys
+            key = self._keys[idx]
+            cooldown_until = self._cooldowns.get(key, 0.0)
+            if now >= cooldown_until:
+                # Key is available! Set current index to this slot.
+                self._current_index = idx
+                if key not in self._clients:
+                    self._clients[key] = genai.Client(api_key=key)
+                return self._clients[key]
+
+        # Fallback safeguard
+        raise RuntimeError("AI capacity limited. All Gemini keys are in cooldown. Circuit breaker active.")
 
     def rotate_key(self):
         if not self._keys or len(self._keys) <= 1:
@@ -77,6 +142,17 @@ class GeminiClientManager:
 
 # Singleton instance
 gemini_manager = GeminiClientManager()
+
+
+# Global semaphore lazy-getter
+_GLOBAL_GEMINI_SEMAPHORE = None
+
+def get_gemini_semaphore() -> asyncio.Semaphore:
+    global _GLOBAL_GEMINI_SEMAPHORE
+    if _GLOBAL_GEMINI_SEMAPHORE is None:
+        limit = int(os.environ.get("GEMINI_CONCURRENCY_LIMIT", "2"))
+        _GLOBAL_GEMINI_SEMAPHORE = asyncio.Semaphore(limit)
+    return _GLOBAL_GEMINI_SEMAPHORE
 
 
 def is_transient_error(e: Exception) -> bool:
@@ -109,267 +185,163 @@ def is_transient_error(e: Exception) -> bool:
     return False
 
 
-class MockResponse:
-    def __init__(self, text):
-        self.text = text
-
-
-class MockEmbeddingItem:
-    def __init__(self, size=768):
-        self.values = [0.0] * size
-
-
-class MockEmbeddingResponse:
-    def __init__(self, count):
-        self.embeddings = [MockEmbeddingItem() for _ in range(count)]
-
-
-async def generate_mock_gemini_response(call_fn: Callable) -> Any:
-    """Generates a highly realistic, context-compatible mock response for sandbox fallback."""
-    import json
-    name = call_fn.__name__
-    logger.info("Generating sandbox mock response for %s", name)
-
-    if name == "call_embed":
-        count = 1
-        if call_fn.__closure__:
-            for cell in call_fn.__closure__:
-                val = cell.cell_contents
-                if isinstance(val, list):
-                    count = len(val)
-                    break
-                elif isinstance(val, str):
-                    count = 1
-                    break
-        return MockEmbeddingResponse(count)
-
-    elif name == "call_summarizer":
-        return MockResponse("The article details progress, figures, and statements from key organizational members. Analysis shows consistency with benchmark reports.")
-
-    elif name == "call_bias_scorer":
-        return MockResponse(json.dumps({
-            "bias_score": 35,
-            "bias_direction": "neutral",
-            "framing_flags": [],
-            "loaded_terms": [],
-            "summary": "The text maintains an objective, informational tone with minimal emotional or partisan framing."
-        }))
-
-    elif name == "call_extractor":
-        return MockResponse(json.dumps({
-            "claims": [
-                {
-                    "text": "The project launched successfully on schedule.",
-                    "context_quote": "launched successfully on schedule",
-                    "claim_type": "event",
-                    "checkability": "high"
-                },
-                {
-                    "text": "Overall energy efficiency increased by 15 percent.",
-                    "context_quote": "increased by 15 percent",
-                    "claim_type": "statistic",
-                    "checkability": "high"
-                }
-            ],
-            "extraction_notes": "Extracted checkable assertions successfully."
-        }))
-
-    elif name == "call_stance":
-        return MockResponse(json.dumps({
-            "stance": "SUPPORTS",
-            "quality_score": 0.85,
-            "reasoning": "The source content aligns with the factual assertion."
-        }))
-
-    elif name == "call_judge":
-        claims_list = []
-        if call_fn.__closure__:
-            for cell in call_fn.__closure__:
-                val = cell.cell_contents
-                if isinstance(val, list) and len(val) > 0 and hasattr(val[0], "claim_id"):
-                    claims_list = val
-                    break
-                elif isinstance(val, str) and '"claim_id"' in val:
-                    try:
-                        data = json.loads(val)
-                        claims_list = data.get("claims", [])
-                    except:
-                        pass
-        
-        claim_verdicts = []
-        if not claims_list:
-            claim_verdicts = [
-                {
-                    "claim_id": "c1",
-                    "verdict": "SUPPORTED",
-                    "confidence": 0.90,
-                    "reasoning": "Corroborated by primary press records.",
-                    "key_source_indices": [0]
-                }
-            ]
-        else:
-            for i, c in enumerate(claims_list):
-                cid = c.claim_id if hasattr(c, "claim_id") else c.get("claim_id") if isinstance(c, dict) else str(i)
-                claim_verdicts.append({
-                    "claim_id": cid or str(i),
-                    "verdict": "SUPPORTED" if i % 2 == 0 else "CONTESTED",
-                    "confidence": 0.85 if i % 2 == 0 else 0.65,
-                    "reasoning": "Factual assertion verified by corroborating reports." if i % 2 == 0 else "Split source stances found in verification.",
-                    "key_source_indices": [0]
-                })
-
-        return MockResponse(json.dumps({
-            "overall_verdict": "MOSTLY_TRUE",
-            "overall_confidence": 0.80,
-            "overall_summary": "The claims are verified by independent sources with high confidence.",
-            "claim_verdicts": claim_verdicts
-        }))
-
-    elif name == "call_best_effort":
-        return MockResponse(json.dumps({
-            "overall_verdict": "MOSTLY_TRUE",
-            "overall_confidence": 0.75,
-            "overall_summary": "Simulated best-effort analysis completed successfully in sandbox fallback mode."
-        }))
-
-    elif name == "call_fast_path":
-        return MockResponse(json.dumps({
-            "bias": {
-                "bias_score": 35,
-                "bias_direction": "neutral",
-                "framing_flags": [],
-                "loaded_terms": [],
-                "summary": "Sandbox bias report."
-            },
-            "claims": [
-                {
-                    "temp_id": "c1",
-                    "text": "The project launched successfully on schedule.",
-                    "context_quote": "launched successfully on schedule",
-                    "claim_type": "event",
-                    "checkability": "high"
-                },
-                {
-                    "temp_id": "c2",
-                    "text": "Overall energy efficiency increased by 15 percent.",
-                    "context_quote": "increased by 15 percent",
-                    "claim_type": "statistic",
-                    "checkability": "high"
-                }
-            ],
-            "verdict": {
-                "overall_verdict": "MOSTLY_TRUE",
-                "overall_confidence": 0.85,
-                "overall_summary": "The claims are verified by independent sources with high confidence.",
-                "claim_verdicts": [
-                    {
-                        "temp_id": "c1",
-                        "verdict": "SUPPORTED",
-                        "confidence": 0.9,
-                        "reasoning": "Verified by historical press logs."
-                    },
-                    {
-                        "temp_id": "c2",
-                        "verdict": "SUPPORTED",
-                        "confidence": 0.8,
-                        "reasoning": "Energy efficiency metrics corroborated."
-                    }
-                ]
-            }
-        }))
-    else:
-        return MockResponse("{}")
-
-
 async def execute_gemini_call(call_fn: Callable[[genai.Client], Any]) -> Any:
     """
-    Executes a Gemini API call with proper retry logic and key fallback.
-
-    Retry Policy:
-    - Max 1 retry for transient errors (5xx, timeouts, network errors) on the current key.
-    - 2.0 second delay before retry.
-    - DO NOT retry the current key for 429 (quota), 403 (permission), 401, or 400.
-
-    Fallback Policy:
-    - If a key fails (due to 429, 403, 401, 5xx after retry, or transient error after retry),
-      rotate to the next available key and restart the request.
-    - If all keys in the pool have been tried and failed, raise a final clean error.
-    - Permanent 404 Model Not Found error is raised immediately without rotating keys.
+    Executes a Gemini API call with proper retry logic, key rotation, cooldown, 
+    circuit-breaker, and request budgeting under a global concurrency semaphore.
     """
-    total_keys = gemini_manager.get_total_keys()
-    keys_tried = 0
+    global active_gemini_calls
+    job_id = job_id_var.get() or "unknown"
+    
+    # 1. Budgeting Check
+    current_calls = job_call_counter.get()
+    if current_calls is not None:
+        max_calls = int(os.environ.get("GEMINI_MAX_CALLS_PER_JOB", "12"))
+        if current_calls >= max_calls:
+            logger.error("[INSTRUMENTATION] JOB_BUDGET_EXCEEDED | Job: %s | Calls: %d / %d", job_id, current_calls, max_calls)
+            raise RuntimeError(f"AI request budget exceeded for job {job_id}. Maximum of {max_calls} Gemini calls allowed.")
+        job_call_counter.set(current_calls + 1)
+        
+    # 2. Circuit Breaker Check
+    if gemini_manager.is_degraded():
+        raise RuntimeError("AI service capacity is currently degraded. Circuit breaker active.")
 
-    # Ensure we try at least once if total_keys is 0
-    max_tries = max(1, total_keys)
-
-    while keys_tried < max_tries:
-        client = gemini_manager.get_client()
-        masked_key = gemini_manager.get_current_key_masked()
-        logger.info(
-            "Attempting Gemini call with key slot %d (%s) (tried %d/%d keys)",
-            gemini_manager._current_index,
-            masked_key,
-            keys_tried,
-            total_keys,
-        )
-
+    # 3. Global Concurrency Control via Semaphore
+    sem = get_gemini_semaphore()
+    logger.info("[INSTRUMENTATION] GLOBAL_SEMAPHORE_WAIT | Job: %s | Active Calls: %d", job_id, active_gemini_calls)
+    
+    start_wait = time.perf_counter()
+    async with sem:
+        wait_time = time.perf_counter() - start_wait
+        logger.info("[INSTRUMENTATION] GLOBAL_SEMAPHORE_ACQUIRED | Job: %s | Wait Time: %.3fs", job_id, wait_time)
+        
+        active_gemini_calls += 1
         try:
-            # Try call
-            return await call_fn(client)
-        except Exception as e:
-            err_str = str(e).lower()
-            code = getattr(e, "code", None)
-            
-            # Extract code from APIError if applicable
-            if isinstance(e, errors.APIError) and getattr(e, "code", None):
-                code = e.code
+            total_keys = gemini_manager.get_total_keys()
+            keys_tried = 0
+            max_tries = max(1, total_keys)
 
-            # A. Invalid model (404 Not Found)
-            if code == 404 or "is not found" in err_str or "not supported" in err_str:
-                logger.error("Invalid Gemini model: %s. Stopping fallback rotation.", settings.gemini_model)
-                raise RuntimeError(f"Invalid Gemini model configuration: {settings.gemini_model}. Please use a supported model like gemini-2.5-flash-lite.") from e
+            while keys_tried < max_tries:
+                # Check circuit breaker inside loop as well
+                if gemini_manager.is_degraded():
+                    raise RuntimeError("AI service capacity is currently degraded. Circuit breaker active.")
 
-            # B. Quota exceeded (429)
-            elif code == 429 or "quota" in err_str or "resource_exhausted" in err_str:
-                logger.warning("Quota exceeded for key slot %d (%s).", gemini_manager._current_index, masked_key)
-                
-            # C. Invalid API Key (400 or 403 permission)
-            elif code in (400, 401, 403) and ("api key not valid" in err_str or "api_key_invalid" in err_str or "permission" in err_str):
-                logger.warning("API key in slot %d (%s) is invalid or unauthorized.", gemini_manager._current_index, masked_key)
-
-            # D. Network Timeout or E. Provider Outage (Transient)
-            elif is_transient_error(e):
-                logger.warning("Transient error/timeout on key slot %d (%s): %s. Retrying once...", gemini_manager._current_index, masked_key, str(e))
-                await asyncio.sleep(2.0)
                 try:
-                    return await call_fn(client)
-                except Exception as retry_err:
-                    logger.warning("Retry failed on key slot %d (%s). Proceeding to rotate.", gemini_manager._current_index, masked_key)
-                    e = retry_err
-            
-            # Other permanent errors
-            elif code == 400:
-                logger.error("Permanent 400 Bad Request error on key slot %d (%s). Raising immediately.", gemini_manager._current_index, masked_key)
-                raise e
+                    client = gemini_manager.get_client()
+                except RuntimeError as re:
+                    logger.error("[INSTRUMENTATION] CIRCUIT_BREAKER_TRIGGERED | %s", str(re))
+                    raise re
+
+                masked_key = gemini_manager.get_current_key_masked()
+                slot_index = gemini_manager._current_index
                 
-            else:
-                logger.warning("Unexpected error on key slot %d (%s): %s", gemini_manager._current_index, masked_key, str(e))
+                logger.info(
+                    "[INSTRUMENTATION] GEMINI_CALL_START | Job: %s | Model: %s | Key Slot: %d (%s) (tried %d/%d keys)",
+                    job_id,
+                    settings.gemini_model,
+                    slot_index,
+                    masked_key,
+                    keys_tried,
+                    total_keys,
+                )
 
-            # Rotate key and try next one if we have fallback keys
-            if total_keys > 1:
-                gemini_manager.rotate_key()
-                keys_tried += 1
-            else:
-                # No other keys to try
-                break
+                call_start = time.perf_counter()
+                try:
+                    # Execute the actual call
+                    result = await call_fn(client)
+                    call_duration = time.perf_counter() - call_start
+                    logger.info(
+                        "[INSTRUMENTATION] GEMINI_CALL_SUCCESS | Job: %s | Key Slot: %d | Duration: %.3fs",
+                        job_id,
+                        slot_index,
+                        call_duration,
+                    )
+                    return result
+                except Exception as e:
+                    call_duration = time.perf_counter() - call_start
+                    err_str = str(e).lower()
+                    code = getattr(e, "code", None)
+                    
+                    if isinstance(e, errors.APIError) and getattr(e, "code", None):
+                        code = e.code
 
-    # If all keys failed, activate Sandbox Mock Fallback Mode
-    logger.warning("All %d Gemini API keys in the pool have failed. Activating Sandbox Mock Fallback Mode.", total_keys)
-    try:
-        return await generate_mock_gemini_response(call_fn)
-    except Exception as mock_err:
-        logger.error("Failed to generate mock sandbox response: %s", mock_err)
-        raise RuntimeError("AI provider quota temporarily exceeded or all keys failed. Please try again later.")
+                    logger.warning(
+                        "[INSTRUMENTATION] GEMINI_CALL_FAILURE | Job: %s | Key Slot: %d | Duration: %.3fs | Error: %s",
+                        job_id,
+                        slot_index,
+                        call_duration,
+                        str(e),
+                    )
+
+                    # A. Invalid model (404 Not Found) - stop immediately
+                    if code == 404 or "is not found" in err_str or "not supported" in err_str:
+                        logger.error("Invalid Gemini model: %s. Stopping fallback rotation.", settings.gemini_model)
+                        raise RuntimeError(f"Invalid Gemini model configuration: {settings.gemini_model}. Please use a supported model like gemini-2.5-flash-lite.") from e
+
+                    # B. Quota exceeded (429) or C. Invalid key/unauthorized (400/401/403 credentials)
+                    is_quota = code == 429 or "quota" in err_str or "resource_exhausted" in err_str
+                    is_auth_error = code in (400, 401, 403) and ("api key not valid" in err_str or "api_key_invalid" in err_str or "permission" in err_str)
+                    
+                    if is_quota or is_auth_error:
+                        if is_quota:
+                            logger.warning("[INSTRUMENTATION] QUOTA_COOLDOWN_ACTIVATED | Key Slot: %d | Key put in 60s cooldown.", slot_index)
+                        else:
+                            logger.warning("[INSTRUMENTATION] INVALID_KEY_COOLDOWN | Key Slot: %d | Bad key put in 60s cooldown.", slot_index)
+                        
+                        # Mark this key as cooling down
+                        gemini_manager.mark_cooldown(gemini_manager._keys[slot_index])
+                        
+                        # Rotate immediately
+                        gemini_manager.rotate_key()
+                        keys_tried += 1
+                        continue
+
+                    # D. Transient errors - retry exactly once on current key
+                    elif is_transient_error(e):
+                        logger.warning("[INSTRUMENTATION] TRANSIENT_RETRY_START | Job: %s | Key Slot: %d. Retrying in 2.0s...", job_id, slot_index)
+                        await asyncio.sleep(2.0)
+                        
+                        call_retry_start = time.perf_counter()
+                        try:
+                            result = await call_fn(client)
+                            logger.info(
+                                "[INSTRUMENTATION] GEMINI_CALL_SUCCESS (AFTER RETRY) | Job: %s | Key Slot: %d | Duration: %.3fs",
+                                job_id,
+                                slot_index,
+                                time.perf_counter() - call_retry_start,
+                            )
+                            return result
+                        except Exception as retry_err:
+                            logger.warning(
+                                "[INSTRUMENTATION] GEMINI_CALL_FAILURE (AFTER RETRY) | Job: %s | Key Slot: %d | Error: %s",
+                                job_id,
+                                slot_index,
+                                str(retry_err),
+                            )
+                            # Put key in cooldown and rotate
+                            gemini_manager.mark_cooldown(gemini_manager._keys[slot_index])
+                            gemini_manager.rotate_key()
+                            keys_tried += 1
+                            e = retry_err
+                            continue
+                    
+                    # Permanent client-side error (like 400 Bad Request) - do not rotate, raise immediately
+                    elif code == 400:
+                        logger.error("Permanent 400 Bad Request on key slot %d. Raising immediately.", slot_index)
+                        raise e
+                        
+                    else:
+                        # Other unexpected errors: put in cooldown and rotate
+                        gemini_manager.mark_cooldown(gemini_manager._keys[slot_index])
+                        gemini_manager.rotate_key()
+                        keys_tried += 1
+                        continue
+
+            # If all keys failed
+            logger.error("[INSTRUMENTATION] ALL_KEYS_EXHAUSTED | Job: %s", job_id)
+            raise RuntimeError("AI provider quota temporarily exceeded or all keys failed. Please try again later.")
+        finally:
+            active_gemini_calls -= 1
 
 
 def validate_gemini_model_sync():

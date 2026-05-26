@@ -181,6 +181,17 @@ async def reuse_completed_job(pool, new_job_id: str, old_job_id: str, article_id
 
 
 async def route_and_execute_pipeline(job_id: str, redis: aioredis.Redis, pool, http_client) -> None:
+    from services.gemini import job_id_var, job_call_counter
+    job_id_token = job_id_var.set(job_id)
+    job_call_token = job_call_counter.set(0)
+    try:
+        await _route_and_execute_pipeline_impl(job_id, redis, pool, http_client)
+    finally:
+        job_id_var.reset(job_id_token)
+        job_call_counter.reset(job_call_token)
+
+
+async def _route_and_execute_pipeline_impl(job_id: str, redis: aioredis.Redis, pool, http_client) -> None:
     """Internal fact-checking pipeline logic with stage timeouts, complexity routing, and caching."""
     start_time = time.perf_counter()
     model_call_time = 0.0
@@ -347,6 +358,17 @@ async def route_and_execute_pipeline(job_id: str, redis: aioredis.Redis, pool, h
     await log_lifecycle_async(pool, job_id, "PIPELINE_SELECTED",
         details={"complexity": complexity, "word_count": wc})
     
+    # ── Degraded mode routing check ──
+    from services.gemini import gemini_manager
+    if gemini_manager.is_degraded():
+        logger.warning("[INSTRUMENTATION] DEGRADED_MODE_BYPASS | Job: %s | AI capacity degraded, routing straight to recovery path.", job_id)
+        await publish_status(redis, job_id, "routing", "⚠️ AI Capacity Limited: Routing to recovery mode...")
+        await run_recovery_pipeline_flow(
+            job_id, redis, pool, raw_text, cleaned, wc, url_hash, input_url, user_id,
+            start_time, fetch_time, model_call_time, "AI service capacity is currently degraded. Circuit breaker active."
+        )
+        return
+
     if complexity == "fast":
         await publish_status(redis, job_id, "processing", "Running fast-track analysis...")
         await run_fast_path_pipeline_flow(job_id, redis, pool, raw_text, cleaned, wc, url_hash, input_url, user_id, start_time, fetch_time, model_call_time)
@@ -359,3 +381,7 @@ async def route_and_execute_pipeline(job_id: str, redis: aioredis.Redis, pool, h
     else:
         # recovery or noisy/broken
         await publish_status(redis, job_id, "processing", "Running recovery analysis...")
+        await run_recovery_pipeline_flow(
+            job_id, redis, pool, raw_text, cleaned, wc, url_hash, input_url, user_id,
+            start_time, fetch_time, model_call_time, "Manual recovery route triggered."
+        )

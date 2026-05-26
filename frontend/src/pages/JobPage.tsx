@@ -65,24 +65,28 @@ export default function JobPage() {
   // Determine stage label for top header
   const getStageLabel = () => {
     if (isError) return 'Failed'
-    if (isComplete) return 'Complete'
+    if (state.stage === 'partial_completed') return 'AI Capacity Limited'
+    if (isComplete) return 'Ready'
     switch(state.stage) {
-      case 'queued': return 'Queued'
-      case 'accepted': return 'Accepted'
-      case 'routing': return 'Routing Pipeline'
-      case 'fetching': return 'Fetching Article'
-      case 'extracting': return 'Extracting Content'
-      case 'parsing_claims': return 'Extracting Claims'
-      case 'verifying_sources': return 'Sourcing Evidence'
-      case 'reasoning': return 'Judging Veracity'
-      case 'generating_verdict': return 'Generating Verdict'
-      case 'spawning_agents': return 'Spawning Agents'
-      case 'fetching_article': return 'Fetching Article'
-      case 'extracting_content': return 'Extracting Content'
-      case 'extracting_claims': return 'Extracting Claims'
-      case 'sourcing_claims': return 'Sourcing Evidence'
-      case 'judging': return 'Judging Veracity'
-      default: return 'Queueing'
+      case 'queued': return 'Waiting for AI Capacity'
+      case 'accepted':
+      case 'routing':
+      case 'reasoning':
+      case 'generating_verdict':
+      case 'spawning_agents':
+      case 'judging':
+        return 'Verification Running'
+      case 'fetching':
+      case 'extracting':
+      case 'parsing_claims':
+      case 'verifying_sources':
+      case 'fetching_article':
+      case 'extracting_content':
+      case 'extracting_claims':
+      case 'sourcing_claims':
+        return 'Evidence Retrieval'
+      default:
+        return 'Verification Running'
     }
   }
 

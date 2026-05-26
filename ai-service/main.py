@@ -94,35 +94,6 @@ async def _connect_redis_with_retry(redis_url: str) -> aioredis.Redis:
     raise SystemExit(1)
 
 
-async def keepalive_loop(app: FastAPI):
-    """
-    Lightweight internal keepalive loop.
-    Pings the local /health endpoint every 5 minutes using the shared HTTP pool
-    to maintain warm runtime state, keep connections alive, and reduce pseudo-cold-starts.
-    """
-    await asyncio.sleep(10.0)  # Wait for startup to fully complete
-    
-    port = os.environ.get("PORT", "8000")
-    url = f"http://127.0.0.1:{port}/health"
-    client = app.state.http_client
-
-    logger.info("[KEEPALIVE] Internal keepalive background loop started.")
-    
-    while True:
-        try:
-            response = await client.get(url, timeout=5.0)
-            logger.debug("[KEEPALIVE] Keepalive ping status: %s", response.status_code)
-        except asyncio.CancelledError:
-            logger.info("[KEEPALIVE] Internal keepalive loop cancelled.")
-            break
-        except Exception as e:
-            logger.warning("[KEEPALIVE] Internal keepalive ping failed: %s", e)
-            
-        try:
-            await asyncio.sleep(300.0)  # Ping every 5 minutes
-        except asyncio.CancelledError:
-            logger.info("[KEEPALIVE] Internal keepalive loop cancelled.")
-            break
 
 
 # ──────────────────────────────────────────────────────────────
@@ -215,8 +186,7 @@ async def lifespan(app: FastAPI):
     logger.info("[INSTRUMENTATION] WORKER_POOL_READY")
     logger.info("[INSTRUMENTATION] QUEUE_CONSUMER_READY")
 
-    # Start keepalive loop
-    app.state.keepalive_task = asyncio.create_task(keepalive_loop(app))
+
 
     app.state.is_ready = True
     app.state.boot_stage = "ready"
@@ -238,9 +208,7 @@ async def lifespan(app: FastAPI):
     app.state.cancel_listener_task.cancel()
     await asyncio.gather(app.state.cancel_listener_task, return_exceptions=True)
 
-    logger.info("Shutting down keepalive task...")
-    app.state.keepalive_task.cancel()
-    await asyncio.gather(app.state.keepalive_task, return_exceptions=True)
+
 
     await app.state.http_client.aclose()
     await close_db_pool(app.state.db_pool)

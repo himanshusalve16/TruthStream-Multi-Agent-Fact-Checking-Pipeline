@@ -83,19 +83,19 @@ const SUBSTAGE_LOGS: Record<Stage, string[]> = {
     'Checking text length & complexity metrics...'
   ],
   parsing_claims: [
-    'Initializing Claim Extractor Agent...',
+    'Initializing factual assertion extractor...',
     'Isolating checkable factual claims...'
   ],
   verifying_sources: [
-    'Deploying Search Agent network...',
+    'Initializing search and evidence retrieval engine...',
     'Scraping corroborating source links...'
   ],
   reasoning: [
-    'Spawning Bias Analyst Agent...',
-    'Cross-referencing stances with veracity judge...'
+    'Analyzing article bias and source stances...',
+    'Synthesizing source evidence with veracity judge...'
   ],
   generating_verdict: [
-    'Synthesizing consensus matrix...',
+    'Compiling evidence evaluation matrix...',
     'Persisting overall and individual claim verdicts...',
     'Done.'
   ],
@@ -112,12 +112,12 @@ const SUBSTAGE_LOGS: Record<Stage, string[]> = {
   ],
   // backward compatibility
   idle: ['Pipeline idle.'],
-  spawning_agents: ['Spawning fact-checking agent pool...'],
+  spawning_agents: ['Waking AI Service...'],
   fetching_article: ['Fetching target article content...'],
   extracting_content: ['Parsing and cleaning text content...'],
   extracting_claims: ['Analyzing article for claims...'],
   sourcing_claims: ['Finding sources for each claim...'],
-  judging: ['Synthesizing final verdict...'],
+  judging: ['Synthesizing evidence and verdicts...'],
   finalizing: ['Saving final verdicts...'],
   complete: ['Pipeline complete.'],
   error: ['Pipeline terminated with error.']
@@ -430,7 +430,7 @@ export default function LoadingState({ stage, message }: Props) {
       <div className="text-left w-full">
         <div className="flex items-center justify-between mb-2 px-1">
           <label className="text-[10px] font-bold text-text-dim uppercase tracking-wider flex items-center gap-1.5">
-            <TerminalIcon size={12} className="text-accent" /> Agent Consensus Output
+            <TerminalIcon size={12} className="text-accent" /> Pipeline Execution Output
           </label>
           <div className="flex items-center gap-2">
             <span className="text-[9px] font-mono text-text-muted">stdout // stream-event</span>
@@ -457,7 +457,7 @@ export default function LoadingState({ stage, message }: Props) {
             {/* Blinking block terminal cursor */}
             {!isTerminalState && (
               <div className="flex items-center gap-1 mt-1 font-bold text-accent">
-                <span>[pipeline] &gt; {message || 'awaiting consensus...'}</span>
+                <span>[pipeline] &gt; {message || 'verification running...'}</span>
                 <span className="terminal-cursor" />
               </div>
             )}

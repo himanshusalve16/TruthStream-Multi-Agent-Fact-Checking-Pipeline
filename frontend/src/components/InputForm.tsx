@@ -268,7 +268,7 @@ export default function InputForm() {
         ) : loading ? (
           <>
             <span className="premium-loader" />
-            <span>Spawning Fact-Check Agents…</span>
+            <span>Verification Running…</span>
           </>
         ) : (
           <>

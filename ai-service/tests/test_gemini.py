@@ -1,41 +1,45 @@
 import pytest
-import json
-from services.gemini import execute_gemini_call, MockResponse, MockEmbeddingResponse
+import requests
+from services.gemini import execute_gemini_call, gemini_manager, job_id_var, job_call_counter
 from google.genai import errors
 
 @pytest.mark.anyio
-async def test_execute_gemini_call_fallback_quota_exceeded():
-    # Define a mock call function that mimics call_bias_scorer and always fails
-    async def call_bias_scorer(client):
-        raise errors.APIError(message="Quota exceeded", code=429)
-
-    # Execute the call, it should fallback to mock scorer response
-    res = await execute_gemini_call(call_bias_scorer)
+async def test_execute_gemini_call_quota_exhaustion_raises_runtime_error():
+    # Setup key and call counter
+    job_id_var.set("test-job-123")
+    job_call_counter.set(0)
     
-    assert isinstance(res, MockResponse)
-    data = json.loads(res.text)
-    assert data["bias_score"] == 35
-    assert data["bias_direction"] == "neutral"
+    # Create requests.Response mock
+    response = requests.Response()
+    response.status_code = 429
+    response._content = b'{"error": {"message": "Quota exceeded", "status": "RESOURCE_EXHAUSTED"}}'
+    
+    # Define a mock call function that always fails with a quota error
+    async def call_always_fails(client):
+        raise errors.APIError(code=429, response=response)
+
+    # All API keys should fail and mark cooldown, eventually raising RuntimeError
+    with pytest.raises(RuntimeError) as exc_info:
+        await execute_gemini_call(call_always_fails)
+    
+    assert "AI provider quota temporarily exceeded or all keys failed" in str(exc_info.value)
+    assert gemini_manager.is_degraded()  # The circuit breaker must be activated
+
+    # Reset circuit breaker
+    gemini_manager._circuit_breaker_until = 0.0
+    gemini_manager._cooldowns = {}
+
 
 @pytest.mark.anyio
-async def test_execute_gemini_call_fallback_generic_error():
-    # Define a mock call function that mimics call_extractor and always fails
-    async def call_extractor(client):
-        raise ValueError("Generic API key failure")
+async def test_execute_gemini_call_budgeting_cap():
+    job_id_var.set("test-job-456")
+    job_call_counter.set(12)  # Max budget reached
 
-    res = await execute_gemini_call(call_extractor)
-    assert isinstance(res, MockResponse)
-    data = json.loads(res.text)
-    assert len(data["claims"]) == 2
-    assert data["claims"][0]["claim_type"] == "event"
+    async def call_valid(client):
+        return "success"
 
-@pytest.mark.anyio
-async def test_execute_gemini_call_fallback_embedding():
-    # Define a mock call function that mimics call_embed and always fails
-    async def call_embed(client):
-        raise ValueError("Embedding generation error")
+    # Execution should fail immediately due to budget cap
+    with pytest.raises(RuntimeError) as exc_info:
+        await execute_gemini_call(call_valid)
 
-    res = await execute_gemini_call(call_embed)
-    assert isinstance(res, MockEmbeddingResponse)
-    assert len(res.embeddings) == 1
-    assert len(res.embeddings[0].values) == 768
+    assert "AI request budget exceeded" in str(exc_info.value)

@@ -9,7 +9,7 @@ from config import settings
 from db import queries
 from models.schemas import BiasResult, JudgeResult
 from agents.bias_scorer import score_bias
-from services.gemini import execute_gemini_call
+from services.gemini import execute_gemini_call, gemini_manager
 from services.redis_publisher import publish_status, publish_event, publish_done
 
 logger = logging.getLogger("truthstream.ai.recovery")
@@ -107,14 +107,18 @@ async def run_recovery_pipeline_flow(
     await queries.update_job_article(pool, job_id, article_id)
 
     # Score bias (timeout: 10s)
-    try:
-        bias_start = time.perf_counter()
-        bias_result = await asyncio.wait_for(score_bias(cleaned, input_url), timeout=10.0)
-        model_call_time += (time.perf_counter() - bias_start)
-    except Exception as e:
-        logger.error("Bias scoring failed in recovery: %s", e)
+    bias_result = None
+    if not gemini_manager.is_degraded():
+        try:
+            bias_start = time.perf_counter()
+            bias_result = await asyncio.wait_for(score_bias(cleaned, input_url), timeout=10.0)
+            model_call_time += (time.perf_counter() - bias_start)
+        except Exception as e:
+            logger.error("Bias scoring failed in recovery: %s", e)
+            
+    if not bias_result:
         bias_result = BiasResult(
-            bias_score=50, bias_direction="neutral", framing_flags=[], loaded_terms=[], summary="Bias analysis unavailable."
+            bias_score=50, bias_direction="neutral", framing_flags=[], loaded_terms=[], summary="Bias analysis unavailable due to AI capacity limit."
         )
 
     # Insert bias
@@ -133,16 +137,20 @@ async def run_recovery_pipeline_flow(
     })
 
     # Run best effort verdict (timeout: 10s)
-    try:
-        judge_start = time.perf_counter()
-        judge_result = await asyncio.wait_for(run_best_effort_verdict(cleaned, bias_result, explanation), timeout=10.0)
-        model_call_time += (time.perf_counter() - judge_start)
-    except Exception as e:
-        logger.error("Best effort verdict failed in recovery: %s", e)
+    judge_result = None
+    if not gemini_manager.is_degraded():
+        try:
+            judge_start = time.perf_counter()
+            judge_result = await asyncio.wait_for(run_best_effort_verdict(cleaned, bias_result, explanation), timeout=10.0)
+            model_call_time += (time.perf_counter() - judge_start)
+        except Exception as e:
+            logger.error("Best effort verdict failed in recovery: %s", e)
+
+    if not judge_result:
         judge_result = JudgeResult(
             overall_verdict="UNVERIFIABLE",
-            overall_confidence=0.1,
-            overall_summary=f"Analysis failed during fallback. Reason: {explanation}",
+            overall_confidence=0.0,
+            overall_summary=f"AI Capacity Limited. Verification is unavailable at this time. (Reason: {explanation})",
             claim_verdicts=[]
         )
 
