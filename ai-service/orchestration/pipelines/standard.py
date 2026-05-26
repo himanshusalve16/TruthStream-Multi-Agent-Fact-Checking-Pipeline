@@ -128,7 +128,7 @@ async def run_standard_path_pipeline_flow(
     source_results_raw = []
     bias_result = None
     try:
-        source_tasks = [find_sources(claim, redis, max_sources=2, http_client=http_client, scrape_full_text=False) for claim in inserted_claims]
+        source_tasks = [find_sources(claim, redis, max_sources=5, http_client=http_client, scrape_full_text=False) for claim in inserted_claims]
 
         bias_task = score_bias(cleaned, input_url)
 

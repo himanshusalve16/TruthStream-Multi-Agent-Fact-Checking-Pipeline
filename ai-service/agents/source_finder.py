@@ -31,7 +31,7 @@ Output JSON only:
   ]
 }"""
 
-MAX_SOURCES = 3
+MAX_SOURCES = 6
 MAX_CONCURRENT_SCRAPES = 5
 
 
@@ -57,10 +57,63 @@ def rank_snippets_by_overlap(claim_text: str, search_results: List[dict]) -> Lis
     return [item[1] for item in scored_results]
 
 
+def deduplicate_and_filter_sources(results: List[dict], max_needed: int) -> List[dict]:
+    """
+    Enforces source domain diversity (max 1 per domain) and filters syndicated
+    mirror content using Jaccard word-level similarity.
+    """
+    import re
+    seen_domains = set()
+    unique_results = []
+
+    def get_word_set(text: str) -> set:
+        words = re.findall(r'\w+', text.lower())
+        stop_words = {'the', 'a', 'an', 'and', 'or', 'but', 'is', 'are', 'was', 'were', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by'}
+        return set(w for w in words if len(w) > 3 and w not in stop_words)
+
+    for i, r in enumerate(results):
+        url = r.get("url", "")
+        domain = extract_domain(url) or url
+
+        # 1. Domain diversity: limit to 1 result per domain
+        if domain in seen_domains:
+            continue
+
+        # 2. Content similarity check to avoid syndication and mirror copies (Jaccard > 0.65)
+        r_text = (r.get("title", "") + " " + r.get("snippet", "")).lower()
+        r_words = get_word_set(r_text)
+
+        is_duplicate = False
+        for ur in unique_results:
+            ur_text = (ur.get("title", "") + " " + ur.get("snippet", "")).lower()
+            ur_words = get_word_set(ur_text)
+            if r_words and ur_words:
+                intersection = r_words.intersection(ur_words)
+                union = r_words.union(ur_words)
+                jaccard = len(intersection) / len(union) if union else 0.0
+                if jaccard > 0.65:
+                    is_duplicate = True
+                    break
+
+        if is_duplicate:
+            continue
+
+        seen_domains.add(domain)
+        # Ensure rank field is set for later quality scoring
+        if "rank" not in r:
+            r["rank"] = i + 1
+        unique_results.append(r)
+
+        if len(unique_results) >= max_needed:
+            break
+
+    return unique_results
+
+
 async def find_sources(
         claim: ClaimSchema,
         redis=None,
-        max_sources: int = 3,
+        max_sources: int = 6,
         http_client = None,
         scrape_full_text: bool = False,
 ) -> ClaimSourcesResult:
@@ -69,13 +122,14 @@ async def find_sources(
     Returns ClaimSourcesResult.
     """
     query = build_claim_query(claim.text, claim.claim_type)
-    results = await search_web(query, max_results=10, redis=redis, http_client=http_client)
+    # Fetch 15 results to have a robust deduplication pool
+    results = await search_web(query, max_results=15, redis=redis, http_client=http_client)
 
     # Rerank snippets by lexical overlap
     results = rank_snippets_by_overlap(claim.text, results)
 
-    # Filter to top max_sources + 2 by quality
-    top_results = results[:max_sources + 2]
+    # Apply domain diversity and syndication filters (request max_sources + 3 as candidates)
+    top_results = deduplicate_and_filter_sources(results, max_needed=max_sources + 3)
 
     if not scrape_full_text:
         # Standard/Fast Path: Rely strictly on search snippets and domain rules without HTTP fetches
