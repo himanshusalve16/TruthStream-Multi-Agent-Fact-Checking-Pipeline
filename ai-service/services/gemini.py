@@ -19,13 +19,77 @@ job_call_counter: ContextVar[int | None] = ContextVar("job_call_counter", defaul
 # Global tracking of active Gemini API calls
 active_gemini_calls = 0
 
+class ProviderStateRegistry:
+    def __init__(self):
+        self.available = True
+        self.cooldown_until = 0.0
+        self.retry_after_seconds = 0.0
+        self.active_requests = 0
+        self.last_quota_failure = 0.0
+
+    def check_availability(self) -> bool:
+        now = time.time()
+        if now < self.cooldown_until:
+            if self.available:
+                self.available = False
+                logger.error("[INSTRUMENTATION] PROVIDER_UNAVAILABLE | Provider is cooling down. Unavailable for another %.1fs", self.cooldown_until - now)
+            return False
+            
+        if not self.available:
+            self.available = True
+            logger.info("[INSTRUMENTATION] PROVIDER_AVAILABLE | Provider is available now.")
+        return True
+
+    def mark_unavailable(self, retry_delay: float):
+        now = time.time()
+        self.available = False
+        self.cooldown_until = now + retry_delay
+        self.retry_after_seconds = retry_delay
+        self.last_quota_failure = now
+        logger.error(
+            "[INSTRUMENTATION] GLOBAL_PROVIDER_COOLDOWN | Quota exhausted. Cooldown set for %.1fs. Provider marked UNAVAILABLE.",
+            retry_delay
+        )
+
+# Centralized provider state registry singleton
+provider_registry = ProviderStateRegistry()
+
+
+def parse_retry_delay(exc: Exception) -> float:
+    """
+    Parses retryDelay from errors.APIError details.
+    Returns delay in seconds if found, else default (30.0).
+    """
+    if not isinstance(exc, errors.APIError):
+        return 30.0
+        
+    details = getattr(exc, "details", None)
+    if not details or not isinstance(details, dict):
+        return 30.0
+        
+    error_data = details.get("error", {})
+    details_list = error_data.get("details", [])
+    if not isinstance(details_list, list):
+        return 30.0
+        
+    for detail in details_list:
+        if isinstance(detail, dict) and detail.get("@type") == "type.googleapis.com/google.rpc.RetryInfo":
+            retry_delay_str = detail.get("retryDelay", "")
+            # e.g., "24s", "24.5s", "60s"
+            if retry_delay_str.endswith("s"):
+                try:
+                    return float(retry_delay_str[:-1])
+                except ValueError:
+                    pass
+    return 30.0
+
+
 class GeminiClientManager:
     def __init__(self):
         self._keys = []
         self._current_index = 0
         self._clients = {}
         self._cooldowns = {}  # key -> timestamp when cooldown expires
-        self._circuit_breaker_until = 0.0
         self.reload_keys()
 
     def reload_keys(self):
@@ -51,46 +115,38 @@ class GeminiClientManager:
 
         self._current_index = 0
         self._cooldowns = {}
-        self._circuit_breaker_until = 0.0
         logger.info("GeminiClientManager initialized with %d keys", len(self._keys))
 
     def is_degraded(self) -> bool:
         """Returns True if the global circuit breaker is active or all keys are in cooldown."""
-        now = time.time()
-        if now < self._circuit_breaker_until:
-            return True
-        if not self._keys:
-            return True
-        
-        # Check if all keys are currently in cooldown
-        all_in_cooldown = True
-        for key in self._keys:
-            cooldown_until = self._cooldowns.get(key, 0.0)
-            if now >= cooldown_until:
-                all_in_cooldown = False
-                break
-        
-        if all_in_cooldown:
-            self._circuit_breaker_until = now + 60.0
-            logger.error(
-                "[INSTRUMENTATION] QUOTA_COOLDOWN_ACTIVATED | All %d Gemini keys are in cooldown. Circuit breaker activated for 60s.",
-                len(self._keys)
-            )
-            return True
-            
-        return False
+        return not provider_registry.check_availability()
 
-    def mark_cooldown(self, key: str):
-        """Put a key into cooldown for 60 seconds."""
-        self._cooldowns[key] = time.time() + 60.0
+    def mark_cooldown(self, key: str, retry_delay: float):
+        """Put a key into cooldown for dynamic retry_delay seconds."""
+        now = time.time()
+        self._cooldowns[key] = now + retry_delay
         try:
             slot_idx = self._keys.index(key)
         except ValueError:
             slot_idx = -1
         logger.warning(
-            "[INSTRUMENTATION] KEY_COOLDOWN_ACTIVATED | Key slot %d put in cooldown for 60s.",
-            slot_idx
+            "[INSTRUMENTATION] KEY_COOLDOWN_ACTIVATED | Key slot %d put in cooldown for %.1fs.",
+            slot_idx, retry_delay
         )
+        
+        # Check if all keys are currently in cooldown
+        all_in_cooldown = True
+        min_remaining = float('inf')
+        for k in self._keys:
+            cooldown_until = self._cooldowns.get(k, 0.0)
+            if now < cooldown_until:
+                min_remaining = min(min_remaining, cooldown_until - now)
+            else:
+                all_in_cooldown = False
+                break
+        
+        if all_in_cooldown:
+            provider_registry.mark_unavailable(min_remaining if min_remaining != float('inf') else 30.0)
 
     def get_client(self) -> genai.Client:
         if not self._keys:
@@ -107,13 +163,21 @@ class GeminiClientManager:
             key = self._keys[idx]
             cooldown_until = self._cooldowns.get(key, 0.0)
             if now >= cooldown_until:
+                if cooldown_until > 0.0:
+                    logger.info("[INSTRUMENTATION] KEY_COOLDOWN_EXPIRED | Key slot %d cooldown expired.", idx)
+                    self._cooldowns[key] = 0.0  # reset cooldown state
+                
                 # Key is available! Set current index to this slot.
                 self._current_index = idx
                 if key not in self._clients:
                     self._clients[key] = genai.Client(api_key=key)
                 return self._clients[key]
+            else:
+                logger.info(
+                    "[INSTRUMENTATION] KEY_SKIPPED_COOLDOWN | Key slot %d skipped (remaining cooldown: %.1fs).",
+                    idx, cooldown_until - now
+                )
 
-        # Fallback safeguard
         raise RuntimeError("AI capacity limited. All Gemini keys are in cooldown. Circuit breaker active.")
 
     def rotate_key(self):
@@ -196,14 +260,14 @@ async def execute_gemini_call(call_fn: Callable[[genai.Client], Any]) -> Any:
     # 1. Budgeting Check
     current_calls = job_call_counter.get()
     if current_calls is not None:
-        max_calls = int(os.environ.get("GEMINI_MAX_CALLS_PER_JOB", "12"))
+        max_calls = int(os.environ.get("GEMINI_MAX_CALLS_PER_JOB", "15"))
         if current_calls >= max_calls:
             logger.error("[INSTRUMENTATION] JOB_BUDGET_EXCEEDED | Job: %s | Calls: %d / %d", job_id, current_calls, max_calls)
             raise RuntimeError(f"AI request budget exceeded for job {job_id}. Maximum of {max_calls} Gemini calls allowed.")
         job_call_counter.set(current_calls + 1)
         
     # 2. Circuit Breaker Check
-    if gemini_manager.is_degraded():
+    if not provider_registry.check_availability():
         raise RuntimeError("AI service capacity is currently degraded. Circuit breaker active.")
 
     # 3. Global Concurrency Control via Semaphore
@@ -223,7 +287,7 @@ async def execute_gemini_call(call_fn: Callable[[genai.Client], Any]) -> Any:
 
             while keys_tried < max_tries:
                 # Check circuit breaker inside loop as well
-                if gemini_manager.is_degraded():
+                if not provider_registry.check_availability():
                     raise RuntimeError("AI service capacity is currently degraded. Circuit breaker active.")
 
                 try:
@@ -283,13 +347,14 @@ async def execute_gemini_call(call_fn: Callable[[genai.Client], Any]) -> Any:
                     is_auth_error = code in (400, 401, 403) and ("api key not valid" in err_str or "api_key_invalid" in err_str or "permission" in err_str)
                     
                     if is_quota or is_auth_error:
+                        retry_delay = parse_retry_delay(e) if is_quota else 30.0
                         if is_quota:
-                            logger.warning("[INSTRUMENTATION] QUOTA_COOLDOWN_ACTIVATED | Key Slot: %d | Key put in 60s cooldown.", slot_index)
+                            logger.warning("[INSTRUMENTATION] QUOTA_COOLDOWN_ACTIVATED | Key Slot: %d | Key put in %.1fs cooldown.", slot_index, retry_delay)
                         else:
-                            logger.warning("[INSTRUMENTATION] INVALID_KEY_COOLDOWN | Key Slot: %d | Bad key put in 60s cooldown.", slot_index)
+                            logger.warning("[INSTRUMENTATION] INVALID_KEY_COOLDOWN | Key Slot: %d | Bad key put in 30.0s cooldown.", slot_index)
                         
                         # Mark this key as cooling down
-                        gemini_manager.mark_cooldown(gemini_manager._keys[slot_index])
+                        gemini_manager.mark_cooldown(gemini_manager._keys[slot_index], retry_delay)
                         
                         # Rotate immediately
                         gemini_manager.rotate_key()
@@ -318,8 +383,8 @@ async def execute_gemini_call(call_fn: Callable[[genai.Client], Any]) -> Any:
                                 slot_index,
                                 str(retry_err),
                             )
-                            # Put key in cooldown and rotate
-                            gemini_manager.mark_cooldown(gemini_manager._keys[slot_index])
+                            # Put key in cooldown (transient cooldown defaults to 10s) and rotate
+                            gemini_manager.mark_cooldown(gemini_manager._keys[slot_index], 10.0)
                             gemini_manager.rotate_key()
                             keys_tried += 1
                             e = retry_err
@@ -331,8 +396,8 @@ async def execute_gemini_call(call_fn: Callable[[genai.Client], Any]) -> Any:
                         raise e
                         
                     else:
-                        # Other unexpected errors: put in cooldown and rotate
-                        gemini_manager.mark_cooldown(gemini_manager._keys[slot_index])
+                        # Other unexpected errors: put in cooldown (30s) and rotate
+                        gemini_manager.mark_cooldown(gemini_manager._keys[slot_index], 30.0)
                         gemini_manager.rotate_key()
                         keys_tried += 1
                         continue

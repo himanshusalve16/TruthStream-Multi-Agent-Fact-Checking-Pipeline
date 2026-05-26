@@ -230,10 +230,20 @@ from routers import observability
 app.include_router(observability.router, prefix="/observability")
 
 
+@app.get("/")
+async def root():
+    """Lightweight root endpoint to reduce monitoring 404 noise."""
+    return {
+        "service": "truthstream-ai",
+        "status": "online"
+    }
+
+
 @app.get("/health")
 async def health():
     """Ultra-lightweight health endpoint returning plain tiny JSON, no logging or processing."""
     return {"status": "ok"}
+
 
 
 @app.get("/ready")
@@ -288,6 +298,19 @@ async def ready(request: Request):
         return JSONResponse(
             status_code=503,
             content={"status": "unhealthy", "details": "Queue workers crashed"}
+        )
+
+    # 5. Check if Gemini provider is degraded/cooling down
+    from services.gemini import provider_registry
+    if not provider_registry.check_availability():
+        import time
+        remaining = int(provider_registry.cooldown_until - time.time())
+        return JSONResponse(
+            status_code=503,
+            content={
+                "status": "degraded",
+                "details": f"AI Capacity Limited (Provider Cooling Down. Retry Available in {max(0, remaining)}s)"
+            }
         )
 
     return {"status": "ready"}

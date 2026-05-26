@@ -40,6 +40,16 @@ async def run_deep_path_pipeline_flow(
     )
     await queries.update_job_article(pool, job_id, article_id)
 
+    # Check provider availability before claim extraction
+    from services.gemini import provider_registry
+    if not provider_registry.check_availability():
+        logger.warning("[INSTRUMENTATION] AI_STAGE_SKIPPED_PROVIDER_DOWN | Stage: claim_extraction | Job: %s", job_id)
+        await run_recovery_pipeline_flow(
+            job_id, redis, pool, raw_text, cleaned, wc, url_hash, input_url, user_id,
+            start_time, fetch_time, model_call_time, "AI capacity limited. Provider is down."
+        )
+        return
+
     # Extract claims
     claims = []
     extraction_notes = "Deep path extraction."
@@ -217,17 +227,21 @@ async def run_deep_path_pipeline_flow(
     await log_lifecycle_async(pool, job_id, "VERDICT_STARTED", start_time=start_time, user_id=user_id)
 
     # Judge Agent
-    try:
-        judge_start = time.perf_counter()
-        # 12s Timeout for Judge Agent
-        judge_result = await asyncio.wait_for(
-            run_judge(inserted_claims, sources_by_claim, bias_result, cleaned),
-            timeout=12.0
-        )
-        model_call_time += (time.perf_counter() - judge_start)
-    except Exception as e:
-        logger.warning("Judge agent failed or timed out in Deep Path: %s. Using fallback.", e)
+    if not provider_registry.check_availability():
+        logger.warning("[INSTRUMENTATION] AI_STAGE_SKIPPED_PROVIDER_DOWN | Stage: judge | Job: %s", job_id)
         judge_result = compute_fallback_verdict(inserted_claims, sources_by_claim, bias_result)
+    else:
+        try:
+            judge_start = time.perf_counter()
+            # 12s Timeout for Judge Agent
+            judge_result = await asyncio.wait_for(
+                run_judge(inserted_claims, sources_by_claim, bias_result, cleaned),
+                timeout=12.0
+            )
+            model_call_time += (time.perf_counter() - judge_start)
+        except Exception as e:
+            logger.warning("Judge agent failed or timed out in Deep Path: %s. Using fallback.", e)
+            judge_result = compute_fallback_verdict(inserted_claims, sources_by_claim, bias_result)
 
     await publish_status(redis, job_id, "generating_verdict", "Saving final verdicts...")
 

@@ -161,7 +161,10 @@ async def run_recovery_pipeline_flow(
     )
 
     await queries.update_job_status(pool, job_id, "PARTIAL")
-    await publish_status(redis, job_id, "partial_completed", "Analysis completed with recovery fallback.")
+    status_msg = "Analysis completed with recovery fallback."
+    if gemini_manager.is_degraded():
+        status_msg = "⚠️ Provider Cooling Down: AI Capacity Limited. Retry Available Soon."
+    await publish_status(redis, job_id, "partial_completed", status_msg)
 
     await publish_event(redis, job_id, "verdict", {
         "overall_verdict": judge_result.overall_verdict,

@@ -359,13 +359,15 @@ async def _route_and_execute_pipeline_impl(job_id: str, redis: aioredis.Redis, p
         details={"complexity": complexity, "word_count": wc})
     
     # ── Degraded mode routing check ──
-    from services.gemini import gemini_manager
-    if gemini_manager.is_degraded():
-        logger.warning("[INSTRUMENTATION] DEGRADED_MODE_BYPASS | Job: %s | AI capacity degraded, routing straight to recovery path.", job_id)
-        await publish_status(redis, job_id, "routing", "⚠️ AI Capacity Limited: Routing to recovery mode...")
+    from services.gemini import provider_registry
+    if not provider_registry.check_availability():
+        import time
+        remaining = int(provider_registry.cooldown_until - time.time())
+        logger.warning("[INSTRUMENTATION] FAST_FAIL_DEGRADED_MODE | Job: %s | Provider down, bypassing standard routing.", job_id)
+        await publish_status(redis, job_id, "routing", f"⚠️ AI Capacity Limited (Provider Cooling Down: Retry Available in {max(0, remaining)}s)")
         await run_recovery_pipeline_flow(
             job_id, redis, pool, raw_text, cleaned, wc, url_hash, input_url, user_id,
-            start_time, fetch_time, model_call_time, "AI service capacity is currently degraded. Circuit breaker active."
+            start_time, fetch_time, model_call_time, f"AI capacity limited. Provider is cooling down. Retry available in {max(0, remaining)}s."
         )
         return
 

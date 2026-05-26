@@ -192,7 +192,7 @@ export default function ClaimCard({ claim, verdict, sources }: Props) {
                       <span className="text-[10px] text-text-muted font-bold tracking-wider block mb-2 px-1">CORROBORATING CITATIONS</span>
                       <div className="flex flex-col gap-2">
                         {sources.map((s) => (
-                          <SourceCard key={s.url} source={s} />
+                          <SourceCard key={s.url} source={s} claimText={claim.text} />
                         ))}
                       </div>
                     </div>
