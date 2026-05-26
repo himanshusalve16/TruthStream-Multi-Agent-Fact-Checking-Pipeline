@@ -4,8 +4,6 @@ import time
 import redis.asyncio as aioredis
 from fastapi import FastAPI
 
-from config import settings
-from db import queries
 from services.redis_publisher import publish_status
 from orchestration.pipeline_router import route_and_execute_pipeline, log_lifecycle_async, _fail_job
 

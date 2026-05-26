@@ -361,7 +361,6 @@ async def _route_and_execute_pipeline_impl(job_id: str, redis: aioredis.Redis, p
     # ── Degraded mode routing check ──
     from services.gemini import provider_registry
     if not provider_registry.check_availability():
-        import time
         remaining = int(provider_registry.cooldown_until - time.time())
         logger.warning("[INSTRUMENTATION] FAST_FAIL_DEGRADED_MODE | Job: %s | Provider down, bypassing standard routing.", job_id)
         await publish_status(redis, job_id, "routing", f"⚠️ AI Capacity Limited (Provider Cooling Down: Retry Available in {max(0, remaining)}s)")

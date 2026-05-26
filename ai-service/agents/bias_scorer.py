@@ -1,5 +1,4 @@
 """Bias Scorer Agent — analyzes article text for media bias signals."""
-import asyncio
 import json
 import logging
 

@@ -2,7 +2,6 @@
 import logging
 import time
 from fastapi import APIRouter, Request, HTTPException
-from db import queries
 
 logger = logging.getLogger(__name__)
 router = APIRouter()

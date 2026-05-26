@@ -1,8 +1,6 @@
 """Claim Extractor Agent — extracts verifiable factual claims from article text."""
-import asyncio
 import json
 import logging
-from typing import List
 
 from google import genai
 from google.genai import types

@@ -1,0 +1,14 @@
+[tool.ruff]
+# Target Python version
+target-version = "py312"
+
+[tool.ruff.lint]
+select = [
+    "F401",   # Unused import
+    "F811",   # Redefinition of unused name
+    "E402"    # Module level import not at top of file
+]
+ignore = []
+
+[tool.ruff.lint.per-file-ignores]
+"**/__init__.py" = ["F401"]

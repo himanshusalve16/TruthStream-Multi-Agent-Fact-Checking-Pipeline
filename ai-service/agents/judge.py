@@ -1,5 +1,4 @@
 """Judge Agent — synthesizes claims, sources, and bias into final verdicts."""
-import asyncio
 import json
 import logging
 from typing import List, Dict

@@ -6,11 +6,7 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager
 
-import asyncio
-import logging
 import time
-import os
-from contextlib import asynccontextmanager
 
 import redis.asyncio as aioredis
 from fastapi import FastAPI, Request
@@ -19,7 +15,7 @@ import httpx
 
 from config import settings
 from db.connection import init_db_pool, close_db_pool
-from routers import internal
+from routers import internal, observability
 from orchestration import cleanup_stuck_jobs, job_worker, stalled_jobs_watchdog, cancellation_listener
 
 logging.basicConfig(
@@ -158,12 +154,6 @@ async def lifespan(app: FastAPI):
     logger.info("[INSTRUMENTATION] GEMINI_PREWARM_DONE")
 
     logger.info("[STARTUP] Preloading and caching prompt templates & agents...")
-    import agents.bias_scorer
-    import agents.extractor
-    import agents.judge
-    import agents.source_finder
-    import orchestration.pipelines.fast
-    import orchestration.pipelines.deep
     logger.info("[STARTUP] Prompt templates and agents preloaded.")
 
     logger.info("[STARTUP] Starting background stalled jobs watchdog...")
@@ -226,7 +216,6 @@ app = FastAPI(
 app.include_router(internal.router, prefix="/internal")
 
 # Phase 5: Include observability router for metrics and health
-from routers import observability
 app.include_router(observability.router, prefix="/observability")
 
 
@@ -303,7 +292,6 @@ async def ready(request: Request):
     # 5. Check if Gemini provider is degraded/cooling down
     from services.gemini import provider_registry
     if not provider_registry.check_availability():
-        import time
         remaining = int(provider_registry.cooldown_until - time.time())
         return JSONResponse(
             status_code=503,
