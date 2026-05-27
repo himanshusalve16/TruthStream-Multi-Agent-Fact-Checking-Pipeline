@@ -53,9 +53,10 @@ interface Props {
   claim: Claim
   verdict?: ClaimVerdict
   sources: Source[]
+  index?: number
 }
 
-export default function ClaimCard({ claim, verdict, sources }: Props) {
+export default function ClaimCard({ claim, verdict, sources, index }: Props) {
   const [expanded, setExpanded] = useState(false)
   const hasVerdict = !!verdict
   
@@ -96,6 +97,11 @@ export default function ClaimCard({ claim, verdict, sources }: Props) {
 
           {/* Badges and Tags row */}
           <div className="flex flex-wrap gap-2 mt-3.5">
+            {index !== undefined && (
+              <span className="premium-tag text-[10px] bg-indigo-950/60 text-indigo-300 border border-indigo-500/20">
+                Priority Rank #{index + 1}
+              </span>
+            )}
             {claim.claim_type && (
               <span className={`premium-tag tag-info text-[10px]`}>
                 {claim.claim_type}
@@ -116,6 +122,27 @@ export default function ClaimCard({ claim, verdict, sources }: Props) {
               </span>
             )}
           </div>
+
+          {/* Source Overlap / Consensus Indicator */}
+          {sources.length > 0 && (
+            <div className="mt-3.5 bg-slate-950/20 p-2.5 rounded-lg border border-white/[0.01] flex flex-wrap items-center justify-between gap-2.5 text-xs text-text-dim">
+              <span className="text-[10px] text-text-muted font-bold tracking-wider">SOURCE CONSENSUS</span>
+              <div className="flex items-center gap-3">
+                <span className="flex items-center gap-1.5 font-bold font-mono text-[10px] text-emerald-400">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                  {sources.filter(s => s.stance === 'SUPPORTS').length} Support
+                </span>
+                <span className="flex items-center gap-1.5 font-bold font-mono text-[10px] text-rose-400">
+                  <span className="w-1.5 h-1.5 rounded-full bg-rose-500" />
+                  {sources.filter(s => s.stance === 'REFUTES').length} Refute
+                </span>
+                <span className="flex items-center gap-1.5 font-bold font-mono text-[10px] text-slate-400">
+                  <span className="w-1.5 h-1.5 rounded-full bg-slate-400" />
+                  {sources.filter(s => s.stance === 'NEUTRAL' || s.stance === 'UNCLEAR').length} Neutral
+                </span>
+              </div>
+            </div>
+          )}
 
           {/* Credibility Confidence slider */}
           {hasVerdict && (

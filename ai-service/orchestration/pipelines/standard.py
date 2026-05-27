@@ -2,18 +2,18 @@ import asyncio
 import logging
 import time
 import redis.asyncio as aioredis
-from typing import Dict
+from typing import Dict, List
 
 from db import queries
 from models.schemas import ClaimSchema, ClaimSourcesResult, BiasResult
 from agents.extractor import extract_claims
 from agents.source_finder import find_sources
-from agents.bias_scorer import score_bias
-from agents.judge import run_judge
+from agents.compressed_judge import run_compressed_judge
 from utils.verdict_calc import compute_fallback_verdict
 from services.embeddings import embed_batch
 from services.redis_publisher import publish_status, publish_event, publish_done
 from orchestration.pipelines.recovery import run_recovery_pipeline_flow
+from utils.priority import compute_claim_significance, calculate_source_overlap, fetch_cached_claim_results
 
 logger = logging.getLogger("truthstream.ai.standard")
 
@@ -25,7 +25,7 @@ async def run_standard_path_pipeline_flow(
     from orchestration.pipeline_router import log_lifecycle_async
 
     # State transition: parsing_claims
-    await publish_status(redis, job_id, "parsing_claims", "Extracting claims (Standard Path)...")
+    await publish_status(redis, job_id, "parsing_claims", "Extracting and prioritizing claims (Standard Path)...")
     await log_lifecycle_async(pool, job_id, "EXTRACTION_STARTED", start_time=start_time, user_id=user_id, details={"path": "standard"})
 
     # Insert article
@@ -40,31 +40,35 @@ async def run_standard_path_pipeline_flow(
     )
     await queries.update_job_article(pool, job_id, article_id)
 
-    # Check provider availability before claim extraction
-    from services.gemini import provider_registry
-    if not provider_registry.check_availability():
-        logger.warning("[INSTRUMENTATION] AI_STAGE_SKIPPED_PROVIDER_DOWN | Stage: claim_extraction | Job: %s", job_id)
+    # Check provider availability & quota pressure
+    from services.gemini import gemini_manager
+    pressure = gemini_manager.get_quota_pressure_level()
+    logger.info("[INSTRUMENTATION] PIPELINE_ROUTING | Quota pressure level: %s", pressure)
+
+    if pressure == "critical":
+        logger.warning("[INSTRUMENTATION] LIGHTWEIGHT_MODE_ACTIVATED | Critical pressure: skipping LLM. Recovery mode.")
+        await publish_status(redis, job_id, "routing", "⚠️ System under high load: Running retrieval-only mode...")
         await run_recovery_pipeline_flow(
             job_id, redis, pool, raw_text, cleaned, wc, url_hash, input_url, user_id,
             start_time, fetch_time, model_call_time, "AI capacity limited. Provider is down."
         )
         return
 
-    # Extract claims
-    claims = []
+    claim_limit = 3 if pressure == "moderate" else 5
+    if pressure == "moderate":
+        logger.warning("[INSTRUMENTATION] LIGHTWEIGHT_MODE_ACTIVATED | Moderate pressure: limiting claims to 3.")
+        await publish_status(redis, job_id, "routing", "⚠️ Quota pressure detected: Running lightweight verification (Max 3 claims)...")
+
+    # Extract candidate claims
+    candidate_claims = []
     extraction_notes = "Standard path extraction."
     try:
         extract_start = time.perf_counter()
         # 10s Timeout for Claim Extraction
         extraction_result = await asyncio.wait_for(extract_claims(cleaned, input_url), timeout=10.0)
         model_call_time += (time.perf_counter() - extract_start)
-        claims = extraction_result.claims
+        candidate_claims = extraction_result.claims
         extraction_notes = extraction_result.extraction_notes
-        
-        # Cap claims to 3 for standard path
-        if len(claims) > 3:
-            logger.info("Capping claims from %d to 3 for Standard Path.", len(claims))
-            claims = claims[:3]
     except Exception as e:
         logger.warning("Claim extraction failed in Standard Path: %s. Falling back to Recovery Path.", e)
         await run_recovery_pipeline_flow(
@@ -73,7 +77,7 @@ async def run_standard_path_pipeline_flow(
         )
         return
 
-    if not claims:
+    if not candidate_claims:
         logger.warning("No claims found in Standard Path. Falling back to Recovery Path.")
         await run_recovery_pipeline_flow(
             job_id, redis, pool, raw_text, cleaned, wc, url_hash, input_url, user_id,
@@ -81,40 +85,103 @@ async def run_standard_path_pipeline_flow(
         )
         return
 
-    # Embed and deduplicate
-    unique_claims = []
-    seen_texts = set()
-    for c in claims:
-        txt_norm = c.text.strip().lower()
-        if txt_norm not in seen_texts:
-            seen_texts.add(txt_norm)
-            unique_claims.append(c)
-    claims = unique_claims
-
-    embeddings = await embed_batch([c.text for c in claims])
+    # Deterministic web search in parallel for all candidate claims to compute significance overlap
+    await publish_status(redis, job_id, "verifying_sources", "Retrieving evidence sources (Standard Path)...")
     
-    async def process_single_claim(claim: ClaimSchema, emb: list[float]) -> ClaimSchema:
+    source_tasks = [
+        find_sources(claim, redis, max_sources=5, http_client=http_client, scrape_full_text=False, classify_stance=False)
+        for claim in candidate_claims
+    ]
+    source_results = await asyncio.gather(*source_tasks, return_exceptions=True)
+
+    # Score and Prioritize Claims
+    scored_claims = []
+    sources_by_claim: Dict[str, ClaimSourcesResult] = {}
+    
+    for i, claim in enumerate(candidate_claims):
+        s_res = source_results[i]
+        if isinstance(s_res, Exception) or s_res is None:
+            s_res = ClaimSourcesResult(claim_id=claim.claim_id or "", sources=[])
+        
+        # Calculate scores
+        sig_score = compute_claim_significance(claim.text, claim.checkability, claim.claim_type)
+        overlap_score = calculate_source_overlap(claim.text, [s.model_dump() for s in s_res.sources]) * 5.0
+        total_priority = sig_score + overlap_score
+        
+        logger.info(
+            "[INSTRUMENTATION] CLAIM_SIGNIFICANCE_SCORING | Claim: %s | Significance: %.2f | Overlap: %.2f | Priority: %.2f",
+            claim.text[:50], sig_score, overlap_score, total_priority
+        )
+        scored_claims.append((total_priority, claim, s_res))
+
+    # Sort and select Top claims
+    scored_claims.sort(key=lambda x: x[0], reverse=True)
+    top_claims_info = scored_claims[:claim_limit]
+    top_claims = [x[1] for x in top_claims_info]
+    
+    # Store top claims sources in the sources_by_claim mapping
+    for _, claim, s_res in top_claims_info:
+        sources_by_claim[claim.claim_id or ""] = s_res
+
+    discarded_count = len(candidate_claims) - len(top_claims)
+    logger.info("[INSTRUMENTATION] TOP_5_CLAIMS_SELECTED | Selected: %d | Discarded: %d", len(top_claims), discarded_count)
+
+    # Semantic Cache Check
+    embeddings = await embed_batch([c.text for c in top_claims])
+    inserted_claims = []
+    cached_verdicts_by_claim = {}
+    cache_hits = 0
+
+    for i, claim in enumerate(top_claims):
+        emb = embeddings[i] if i < len(embeddings) else []
+        similar_id = None
+        cached_verdict = None
+        cached_sources = []
+        
         if emb:
             similar = await queries.find_similar_claim(pool, emb)
             if similar:
-                claim.claim_id = str(similar["id"])
-                return claim
+                similar_id = str(similar["id"])
+                cached_sources, cached_verdict = await fetch_cached_claim_results(pool, similar_id)
 
-        claim_id = await queries.insert_claim(
-            pool, job_id, article_id,
-            claim.text, claim.context_quote,
-            claim.claim_type, claim.checkability,
-            emb or None,
-        )
-        claim.claim_id = claim_id
-        return claim
-
-    tasks = []
-    for i, claim in enumerate(claims):
-        emb = embeddings[i] if i < len(embeddings) else []
-        tasks.append(process_single_claim(claim, emb))
-
-    inserted_claims = list(await asyncio.gather(*tasks))
+        if similar_id and cached_verdict:
+            # Semantic cache hit!
+            claim.claim_id = similar_id
+            logger.info("[INSTRUMENTATION] CACHE_REUSED | Claim: %s | Reused Claim ID: %s", claim.text[:50], similar_id)
+            cache_hits += 1
+            
+            cached_verdicts_by_claim[similar_id] = {
+                "verdict": cached_verdict["verdict"],
+                "confidence": float(cached_verdict["confidence"]),
+                "reasoning": cached_verdict["reasoning"]
+            }
+            
+            # Map cached sources
+            from models.schemas import SourceSchema
+            reused_sources = []
+            for s in cached_sources:
+                reused_sources.append(SourceSchema(
+                    url=s["url"],
+                    title=s["title"],
+                    domain=s["domain"],
+                    snippet=s["snippet"],
+                    full_text=s["full_text"],
+                    stance=s["stance"],
+                    quality_score=float(s["quality_score"]) if s["quality_score"] is not None else 0.0,
+                    fetch_status=s["fetch_status"]
+                ))
+            sources_by_claim[similar_id] = ClaimSourcesResult(claim_id=similar_id, sources=reused_sources)
+            inserted_claims.append(claim)
+        else:
+            # Cache miss: insert new claim
+            claim_id = await queries.insert_claim(
+                pool, job_id, article_id,
+                claim.text, claim.context_quote,
+                claim.claim_type, claim.checkability,
+                emb or None,
+            )
+            claim.claim_id = claim_id
+            inserted_claims.append(claim)
 
     # Publish claims extracted event
     await publish_event(redis, job_id, "claims_extracted", {
@@ -127,50 +194,36 @@ async def run_standard_path_pipeline_flow(
             }
             for c in inserted_claims
         ],
-        "extraction_notes": extraction_notes,
+        "extraction_notes": f"{extraction_notes} ({cache_hits} claims resolved via cache)",
     })
 
     # State transition: verifying_sources
-    await publish_status(redis, job_id, "verifying_sources", "Crawling sources & analyzing bias (Standard Path)...")
+    await publish_status(redis, job_id, "verifying_sources", "Analyzing bias and claim evidence (Standard Path)...")
     await log_lifecycle_async(pool, job_id, "REASONING_STARTED", start_time=start_time, user_id=user_id)
 
-    # Sourcing & Bias analysis in parallel
-    source_results_raw = []
+    # Identify cache-miss claims that need Gemini analysis
+    cache_miss_claims = [c for c in inserted_claims if c.claim_id not in cached_verdicts_by_claim]
+
     bias_result = None
-    try:
-        source_tasks = [find_sources(claim, redis, max_sources=5, http_client=http_client, scrape_full_text=False) for claim in inserted_claims]
+    judge_result = None
+    stances_by_claim = {}
 
-        bias_task = score_bias(cleaned, input_url)
-
-        sourcing_start = time.perf_counter()
-        # 15s Timeout for sourcing + bias stages in parallel
-        results = await asyncio.wait_for(
-            asyncio.gather(
-                asyncio.gather(*source_tasks, return_exceptions=True),
-                bias_task,
-                return_exceptions=True,
-            ),
-            timeout=15.0
+    if cache_miss_claims:
+        logger.info("[INSTRUMENTATION] PIPELINE_COMPRESSED | Run compressed judgment for %d cache-miss claims.", len(cache_miss_claims))
+        compressed_start = time.perf_counter()
+        bias_result, judge_result, stances_by_claim = await run_compressed_judge(
+            cache_miss_claims, sources_by_claim, cleaned, input_url
         )
-        sourcing_duration = time.perf_counter() - sourcing_start
-        model_call_time += sourcing_duration
-        source_results_raw, bias_result = results
-    except asyncio.TimeoutError:
-        logger.warning("Sourcing/Bias timed out in Standard Path. Falling back to Recovery Path.")
-        await run_recovery_pipeline_flow(
-            job_id, redis, pool, raw_text, cleaned, wc, url_hash, input_url, user_id,
-            start_time, fetch_time, model_call_time, "Sourcing or bias analysis timed out (15s budget)."
-        )
-        return
-
-    # Handle bias failure
-    if isinstance(bias_result, Exception) or bias_result is None:
-        logger.error("Bias scoring failed: %s", bias_result)
+        model_call_time += (time.perf_counter() - compressed_start)
+    else:
+        logger.info("[INSTRUMENTATION] PIPELINE_COMPRESSED | All claims resolved via cache. Skipping Gemini judgment.")
         bias_result = BiasResult(
-            bias_score=50, bias_direction="neutral",
+            bias_score=10, bias_direction="neutral",
             framing_flags=[], loaded_terms=[],
-            summary="Bias analysis unavailable."
+            summary="All claims resolved via semantic cache. Minimal bias assumed."
         )
+        judge_result = compute_fallback_verdict(inserted_claims, sources_by_claim, bias_result)
+        stances_by_claim = {}
 
     # Insert bias result
     await queries.insert_bias_result(
@@ -187,17 +240,22 @@ async def run_standard_path_pipeline_flow(
         "summary": bias_result.summary,
     })
 
-    # Process source results
-    sources_by_claim: Dict[str, ClaimSourcesResult] = {}
-    for source_result in (source_results_raw if isinstance(source_results_raw, list) else []):
-        if isinstance(source_result, Exception) or source_result is None:
-            logger.warning("Source finding failed for a claim: %s", source_result)
+    # Save sources and stances into database, publish events
+    for c in inserted_claims:
+        cid = c.claim_id or ""
+        c_sources = sources_by_claim.get(cid)
+        if not c_sources:
             continue
-        cid = source_result.claim_id
-        sources_by_claim[cid] = source_result
+            
+        # Update source stances if cache miss
+        if cid not in cached_verdicts_by_claim:
+            c_stances = stances_by_claim.get(cid, [])
+            for idx, s in enumerate(c_sources.sources):
+                if idx < len(c_stances):
+                    s.stance = c_stances[idx]
 
-        # Insert sources into DB
-        for s in source_result.sources:
+        # Save sources in DB
+        for s in c_sources.sources:
             sid = await queries.insert_source(
                 pool, cid, s.url, s.title, s.domain,
                 s.snippet, s.full_text, s.stance,
@@ -218,40 +276,40 @@ async def run_standard_path_pipeline_flow(
                     "quality_score": s.quality_score,
                     "fetch_status": s.fetch_status,
                 }
-                for s in source_result.sources
+                for s in c_sources.sources
             ],
         })
 
     # State transition: reasoning / generating_verdict
-    await publish_status(redis, job_id, "reasoning", "Synthesizing final verdict (Standard Path)...")
-    await log_lifecycle_async(pool, job_id, "VERDICT_STARTED", start_time=start_time, user_id=user_id)
-
-    # Judge Agent
-    if not provider_registry.check_availability():
-        logger.warning("[INSTRUMENTATION] AI_STAGE_SKIPPED_PROVIDER_DOWN | Stage: judge | Job: %s", job_id)
-        judge_result = compute_fallback_verdict(inserted_claims, sources_by_claim, bias_result)
-    else:
-        try:
-            judge_start = time.perf_counter()
-            # 10s Timeout for Judge Agent
-            judge_result = await asyncio.wait_for(
-                run_judge(inserted_claims, sources_by_claim, bias_result, cleaned),
-                timeout=10.0
-            )
-            model_call_time += (time.perf_counter() - judge_start)
-        except Exception as e:
-            logger.warning("Judge agent failed or timed out in Standard Path: %s. Using fallback.", e)
-            judge_result = compute_fallback_verdict(inserted_claims, sources_by_claim, bias_result)
-
     await publish_status(redis, job_id, "generating_verdict", "Saving final verdicts...")
 
-    # Insert verdicts
+    # Save claim verdicts to DB and gather for the verdict event
+    claim_verdicts_payload = []
+    
+    # 1. New verdicts from compressed judge
     for cv in judge_result.claim_verdicts:
         await queries.insert_verdict(
             pool, job_id, cv.claim_id,
             cv.verdict, cv.confidence, cv.reasoning, False
         )
+        claim_verdicts_payload.append(cv.model_dump())
+        
+    # 2. Cached verdicts
+    for cid, cached in cached_verdicts_by_claim.items():
+        await queries.insert_verdict(
+            pool, job_id, cid,
+            cached["verdict"], cached["confidence"],
+            cached["reasoning"] + " (Resolved via Semantic Cache)", False
+        )
+        claim_verdicts_payload.append({
+            "claim_id": cid,
+            "verdict": cached["verdict"],
+            "confidence": cached["confidence"],
+            "reasoning": cached["reasoning"] + " (Resolved via Semantic Cache)",
+            "key_source_indices": []
+        })
 
+    # Save overall verdict
     await queries.insert_verdict(
         pool, job_id, None,
         judge_result.overall_verdict, judge_result.overall_confidence,
@@ -262,7 +320,7 @@ async def run_standard_path_pipeline_flow(
         "overall_verdict": judge_result.overall_verdict,
         "overall_confidence": judge_result.overall_confidence,
         "overall_summary": judge_result.overall_summary,
-        "claim_verdicts": [cv.model_dump() for cv in judge_result.claim_verdicts],
+        "claim_verdicts": claim_verdicts_payload,
     })
 
     await queries.update_job_status(pool, job_id, "COMPLETE")

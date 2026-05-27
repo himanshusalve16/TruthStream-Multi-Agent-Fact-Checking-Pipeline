@@ -35,11 +35,14 @@ export default function ClaimList({ claims, claimVerdicts, sourcesByClaim }: Pro
     }
   }
 
+  const count = claims.length
+  const headerLabel = count <= 5 ? `Top ${count} Verified Claims` : `Top 5 Verified Claims`
+
   return (
     <section id="claims-section" className="text-left">
       <div className="flex items-center justify-between mb-4">
         <h3 className="text-xs font-bold text-text-dim uppercase tracking-wider flex items-center gap-1.5">
-          <CheckSquare size={13} className="text-accent" /> isolated claims ({claims.length})
+          <CheckSquare size={13} className="text-accent" /> {headerLabel}
         </h3>
       </div>
 
@@ -49,12 +52,13 @@ export default function ClaimList({ claims, claimVerdicts, sourcesByClaim }: Pro
         animate="show"
         className="flex flex-col gap-4"
       >
-        {claims.map((claim) => (
+        {claims.map((claim, index) => (
           <motion.div key={claim.claim_id} variants={cardItemVariants}>
             <ClaimCard
               claim={claim}
               verdict={verdictMap[claim.claim_id]}
               sources={sourcesByClaim[claim.claim_id] || []}
+              index={index}
             />
           </motion.div>
         ))}

@@ -107,6 +107,11 @@ def deduplicate_and_filter_sources(results: List[dict], max_needed: int) -> List
         if len(unique_results) >= max_needed:
             break
 
+    removed_count = len(results) - len(unique_results)
+    if removed_count > 0:
+        logger.info("[INSTRUMENTATION] EVIDENCE_DUPLICATES_REMOVED | Removed: %d | Remaining: %d | Duplication Ratio: %.2f%%", 
+            removed_count, len(unique_results), (removed_count / len(results)) * 100)
+
     return unique_results
 
 
@@ -116,6 +121,7 @@ async def find_sources(
         max_sources: int = 6,
         http_client = None,
         scrape_full_text: bool = False,
+        classify_stance: bool = True,
 ) -> ClaimSourcesResult:
     """
     For a single claim: search → scrape (if enabled) → classify stance.
@@ -194,8 +200,11 @@ async def find_sources(
     if not selected:
         return ClaimSourcesResult(claim_id=claim.claim_id or "", sources=[])
 
-    # Classify stances via LLM
-    stances = await _classify_stances(claim.text, selected)
+    # Classify stances via LLM if requested, else default to UNCLEAR
+    if classify_stance:
+        stances = await _classify_stances(claim.text, selected)
+    else:
+        stances = ["UNCLEAR"] * len(selected)
 
     sources = []
     for i, s in enumerate(selected):

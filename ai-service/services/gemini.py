@@ -121,6 +121,28 @@ class GeminiClientManager:
         """Returns True if the global circuit breaker is active or all keys are in cooldown."""
         return not provider_registry.check_availability()
 
+    def get_quota_pressure_level(self) -> str:
+        """
+        Calculates the current quota pressure level based on cooling keys and circuit breaker.
+        Returns:
+            "critical": if the provider is currently unavailable / circuit-broken
+            "moderate": if any key is in cooldown
+            "healthy": if no keys are in cooldown and provider is available
+        """
+        if not provider_registry.check_availability():
+            return "critical"
+            
+        now = time.time()
+        cooldown_count = 0
+        for k in self._keys:
+            if now < self._cooldowns.get(k, 0.0):
+                cooldown_count += 1
+                
+        if cooldown_count > 0:
+            return "moderate"
+            
+        return "healthy"
+
     def mark_cooldown(self, key: str, retry_delay: float):
         """Put a key into cooldown for dynamic retry_delay seconds."""
         now = time.time()
