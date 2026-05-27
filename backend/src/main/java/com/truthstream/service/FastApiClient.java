@@ -73,24 +73,56 @@ public class FastApiClient {
      * instances (e.g., free-tier service is sleeping), falls back to the
      * static {@code FASTAPI_BASE_URL} environment variable.
      */
-    private String resolveBaseUrl() {
-        String baseUrl = fallbackBaseUrl;
+    String resolveBaseUrl() {
+        String rawUrl = null;
         try {
             List<ServiceInstance> instances = discoveryClient.getInstances(AI_SERVICE_ID);
             if (instances != null && !instances.isEmpty()) {
-                baseUrl = instances.get(0).getUri().toString();
-                log.debug("AI service URL resolved via Eureka: {}", baseUrl);
+                rawUrl = instances.get(0).getUri().toString();
+                log.info("Eureka-discovered URI: {}", rawUrl);
             } else {
-                log.debug("Eureka returned no instances for {}. Using static fallback URL.", AI_SERVICE_ID);
+                log.info("Eureka returned no instances for {}. Using static fallback URL: {}", AI_SERVICE_ID, fallbackBaseUrl);
             }
         } catch (Exception e) {
-            log.warn("Eureka lookup failed for {}: {}. Using static fallback URL.", AI_SERVICE_ID, e.getMessage());
+            log.warn("Eureka lookup failed for {}: {}. Using static fallback URL: {}", AI_SERVICE_ID, e.getMessage(), fallbackBaseUrl);
         }
 
-        if (baseUrl != null && baseUrl.endsWith("/")) {
-            baseUrl = baseUrl.substring(0, baseUrl.length() - 1);
+        String finalUrl = normalizeUrl(rawUrl != null ? rawUrl : fallbackBaseUrl);
+        log.info("Final normalized dispatch URL: {}", finalUrl);
+        return finalUrl;
+    }
+
+    public static String normalizeUrl(String url) {
+        if (url == null) {
+            return null;
         }
-        return baseUrl;
+        String normalized = url.trim();
+
+        // Remove trailing slashes
+        while (normalized.endsWith("/")) {
+            normalized = normalized.substring(0, normalized.length() - 1);
+        }
+
+        // Clean up nested schemes like http://https://, http://http://, https://https://, or https://http://
+        if (normalized.startsWith("http://https://")) {
+            normalized = normalized.substring(7);
+        } else if (normalized.startsWith("http://http://")) {
+            normalized = normalized.substring(7);
+        } else if (normalized.startsWith("https://https://")) {
+            normalized = normalized.substring(8);
+        } else if (normalized.startsWith("https://http://")) {
+            normalized = normalized.substring(8);
+        }
+
+        // If it does not start with http:// or https://, prepend http://
+        if (!normalized.startsWith("http://") && !normalized.startsWith("https://")) {
+            normalized = "http://" + normalized;
+        }
+
+        // Remove duplicate ports if they were appended at the end (e.g. host:10000:10000)
+        normalized = normalized.replaceAll(":(\\d+):\\1$", ":$1");
+
+        return normalized;
     }
 
     // ── Public API ────────────────────────────────────────────────────────────
