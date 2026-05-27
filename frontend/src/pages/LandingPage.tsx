@@ -11,6 +11,7 @@ import {
   Activity 
 } from 'lucide-react'
 import InputForm from '../components/InputForm'
+import TutorialCard from '../components/TutorialCard'
 
 export default function LandingPage() {
   // Stagger animation container
@@ -56,7 +57,7 @@ export default function LandingPage() {
       </header>
 
       {/* Hero Section */}
-      <main className="container mx-auto px-6 pt-16 pb-24 relative z-10 max-w-4xl text-center">
+      <main className="container mx-auto px-6 pt-16 pb-24 relative z-10 max-w-5xl text-center">
         <motion.div 
           variants={containerVariants}
           initial="hidden"
@@ -92,13 +93,19 @@ export default function LandingPage() {
             Submit any article URL or text passage. Our multi-agent network isolates claims, corroborates sources, scores media bias, and streams live verdicts as it runs.
           </motion.p>
 
-          {/* Fact Check Input Form */}
+          {/* Fact Check Input & Walkthrough Grid */}
           <motion.div 
             variants={itemVariants}
-            className="w-full max-w-2xl mb-16 relative"
+            className="w-full grid grid-cols-1 md:grid-cols-2 lg:grid-cols-12 gap-8 mb-16 items-stretch text-left"
           >
-            <div className="absolute -inset-1.5 rounded-2xl bg-gradient-to-r from-accent to-purple-500 opacity-20 blur-xl group-focus-within:opacity-40 transition duration-1000 pointer-events-none" />
-            <InputForm />
+            <div className="lg:col-span-7 relative flex flex-col justify-center">
+              <div className="absolute -inset-1.5 rounded-2xl bg-gradient-to-r from-accent to-purple-500 opacity-20 blur-xl group-focus-within:opacity-40 transition duration-1000 pointer-events-none" />
+              <InputForm />
+            </div>
+            
+            <div className="lg:col-span-5 flex">
+              <TutorialCard />
+            </div>
           </motion.div>
 
           {/* Live Activity Ticker / Stats */}
