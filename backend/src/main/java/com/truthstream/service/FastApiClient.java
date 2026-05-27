@@ -74,18 +74,23 @@ public class FastApiClient {
      * static {@code FASTAPI_BASE_URL} environment variable.
      */
     private String resolveBaseUrl() {
+        String baseUrl = fallbackBaseUrl;
         try {
             List<ServiceInstance> instances = discoveryClient.getInstances(AI_SERVICE_ID);
             if (instances != null && !instances.isEmpty()) {
-                String url = instances.get(0).getUri().toString();
-                log.debug("AI service URL resolved via Eureka: {}", url);
-                return url;
+                baseUrl = instances.get(0).getUri().toString();
+                log.debug("AI service URL resolved via Eureka: {}", baseUrl);
+            } else {
+                log.debug("Eureka returned no instances for {}. Using static fallback URL.", AI_SERVICE_ID);
             }
-            log.debug("Eureka returned no instances for {}. Using static fallback URL.", AI_SERVICE_ID);
         } catch (Exception e) {
             log.warn("Eureka lookup failed for {}: {}. Using static fallback URL.", AI_SERVICE_ID, e.getMessage());
         }
-        return fallbackBaseUrl;
+
+        if (baseUrl != null && baseUrl.endsWith("/")) {
+            baseUrl = baseUrl.substring(0, baseUrl.length() - 1);
+        }
+        return baseUrl;
     }
 
     // ── Public API ────────────────────────────────────────────────────────────
