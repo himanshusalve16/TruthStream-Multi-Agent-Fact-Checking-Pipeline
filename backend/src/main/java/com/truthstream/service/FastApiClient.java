@@ -122,6 +122,14 @@ public class FastApiClient {
         // Remove duplicate ports if they were appended at the end (e.g. host:10000:10000)
         normalized = normalized.replaceAll(":(\\d+):\\1$", ":$1");
 
+        // Render deployment specific normalization: force HTTPS and strip port
+        if (normalized.contains(".onrender.com")) {
+            if (normalized.startsWith("http://")) {
+                normalized = "https://" + normalized.substring(7);
+            }
+            normalized = normalized.replaceAll(":\\d+$", "");
+        }
+
         return normalized;
     }
 

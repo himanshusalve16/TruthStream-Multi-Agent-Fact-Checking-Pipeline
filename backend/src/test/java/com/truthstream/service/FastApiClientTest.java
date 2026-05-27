@@ -38,7 +38,7 @@ class FastApiClientTest {
     void normalizeUrl_cleansNestedHttpsScheme() {
         String raw = "http://https://ai-service-w29p.onrender.com:10000";
         String normalized = FastApiClient.normalizeUrl(raw);
-        assertEquals("https://ai-service-w29p.onrender.com:10000", normalized);
+        assertEquals("https://ai-service-w29p.onrender.com", normalized);
     }
 
     @Test
@@ -59,7 +59,7 @@ class FastApiClientTest {
     void normalizeUrl_removesDuplicatePorts() {
         String raw = "http://https://ai-service-w29p.onrender.com:10000:10000";
         String normalized = FastApiClient.normalizeUrl(raw);
-        assertEquals("https://ai-service-w29p.onrender.com:10000", normalized);
+        assertEquals("https://ai-service-w29p.onrender.com", normalized);
     }
 
     @Test
@@ -87,7 +87,7 @@ class FastApiClientTest {
                 .thenReturn(List.of(instance));
 
         String resolved = fastApiClient.resolveBaseUrl();
-        assertEquals("https://ai-service-w29p.onrender.com:10000", resolved);
+        assertEquals("https://ai-service-w29p.onrender.com", resolved);
     }
 
     @Test
@@ -100,5 +100,19 @@ class FastApiClientTest {
 
         String resolved = fastApiClient.resolveBaseUrl();
         assertEquals("http://ai-service:8000", resolved);
+    }
+
+    @Test
+    void normalizeUrl_cleansRenderHttpsUrlWithPort() {
+        String raw = "http://https://ai-service-w29p.onrender.com:10000";
+        String normalized = FastApiClient.normalizeUrl(raw);
+        assertEquals("https://ai-service-w29p.onrender.com", normalized);
+    }
+
+    @Test
+    void normalizeUrl_cleansRenderHttpUrlWithPort() {
+        String raw = "http://ai-service-w29p.onrender.com:8000";
+        String normalized = FastApiClient.normalizeUrl(raw);
+        assertEquals("https://ai-service-w29p.onrender.com", normalized);
     }
 }
