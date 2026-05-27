@@ -117,12 +117,12 @@ export default function LandingPage() {
           {/* Premium Headline */}
           <motion.h1 
             variants={itemVariants}
-            className="text-4xl sm:text-6xl font-black tracking-tight leading-tight max-w-3xl mb-6"
+            className="flex flex-col gap-2 sm:gap-4 font-black tracking-tight leading-tight max-w-5xl mb-6"
           >
-            Real-time AI{' '}
-            <span className="gradient-text font-black">Fact-Checking</span>
-            <br />
-            & Veracity Pipeline
+            <span className="gradient-text font-black text-4xl sm:text-5xl lg:text-6xl">TruthStream</span>
+            <span className="text-2xl sm:text-3xl lg:text-4xl font-bold text-white/90">
+              Real-Time AI Based Fact Checking & Media Bias Analysis Platform
+            </span>
           </motion.h1>
 
           {/* Subtitle */}
@@ -130,7 +130,7 @@ export default function LandingPage() {
             variants={itemVariants}
             className="text-base sm:text-lg text-text-dim leading-relaxed max-w-xl mb-10 font-medium"
           >
-            Submit any article URL or text passage. Our multi-agent network isolates claims, corroborates sources, scores media bias, and streams live verdicts as it runs.
+            Submit any news article URL or text passage. Our multi-agent network isolates claims, corroborates sources, scores media bias, and streams live verdicts as it runs.
           </motion.p>
 
           {/* Fact Check Input & Walkthrough Grid */}
