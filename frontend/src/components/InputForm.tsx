@@ -11,15 +11,30 @@ export default function InputForm() {
   const [text, setText] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
-  const [systemStatus, setSystemStatus] = useState<'online' | 'warming_up' | 'capacity_limited'>('warming_up')
+  // 'unknown' on first load prevents a flash of "Warming Up" before the
+  // first health check resolves. The badge renders nothing meaningful until
+  // we have a real answer.
+  const [systemStatus, setSystemStatus] = useState<'online' | 'warming_up' | 'capacity_limited' | 'unknown'>('unknown')
   const navigate = useNavigate()
   const { dispatch } = useJobContext()
 
   useEffect(() => {
     let active = true
-    let timerId: any = null
+    let timerId: ReturnType<typeof setTimeout> | null = null
 
-    const checkStatus = async () => {
+    /**
+     * Attempt one health check with up to `maxRetries` retries.
+     *
+     * Retry strategy: exponential backoff starting at 1 s.
+     * - Handles Render free-tier wake-up latency (typically 3–8 s).
+     * - Covers transient network blips without immediately showing
+     *   "Warming Up" to the user.
+     *
+     * Success path  → HTTP 200 from /api/health → ONLINE
+     * Degraded path → HTTP 200 with status=degraded → CAPACITY_LIMITED
+     * Fail path     → all retries exhausted → WARMING_UP
+     */
+    const checkWithRetry = async (attempt = 0, maxRetries = 3): Promise<void> => {
       try {
         const res = await jobs.checkHealth()
         if (!active) return
@@ -30,14 +45,28 @@ export default function InputForm() {
         } else {
           setSystemStatus('warming_up')
         }
-      } catch (err) {
+      } catch {
         if (!active) return
+        if (attempt < maxRetries) {
+          // Exponential backoff: 1 s, 2 s, 4 s
+          const delay = 1000 * Math.pow(2, attempt)
+          await new Promise(resolve => setTimeout(resolve, delay))
+          if (!active) return
+          return checkWithRetry(attempt + 1, maxRetries)
+        }
+        // All retries exhausted — gateway is truly unreachable.
         setSystemStatus('warming_up')
       }
-      timerId = setTimeout(checkStatus, 30000)
     }
 
-    checkStatus()
+    const scheduledCheck = async () => {
+      await checkWithRetry()
+      if (active) {
+        timerId = setTimeout(scheduledCheck, 30000)
+      }
+    }
+
+    scheduledCheck()
 
     return () => {
       active = false
@@ -61,41 +90,31 @@ export default function InputForm() {
       dispatch({ type: 'SET_JOB_ID', jobId })
       navigate(`/jobs/${jobId}`)
     } catch (err: any) {
-      console.error('Submission error:', err);
-      if (err.message && (err.message.includes('Backend API URL') || err.message.includes('Invalid backend API base URL'))) {
-        setError(err.message);
-      } else if (err.response) {
-        const status = err.response.status;
-        const msg = err.response.data?.message || err.response.data?.error || err.message;
-        const endpoint = err.config?.url;
-        
-        let absoluteUrl = endpoint || '';
-        const baseUrl = import.meta.env.VITE_API_BASE_URL || '';
-        if (baseUrl && !absoluteUrl.startsWith('http')) {
-          const base = baseUrl.endsWith('/') ? baseUrl.slice(0, -1) : baseUrl;
-          const path = absoluteUrl.startsWith('/') ? absoluteUrl : `/${absoluteUrl}`;
-          absoluteUrl = `${base}${path}`;
-        }
+      console.error('Submission error:', err)
 
+      const resolveUrl = (configUrl?: string) => {
+        const raw = configUrl || ''
+        if (raw.startsWith('http')) return raw
+        const base = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '')
+        return base + (raw.startsWith('/') ? raw : `/${raw}`)
+      }
+
+      if (err.response) {
+        const status = err.response.status as number
+        const msg = err.response.data?.message || err.response.data?.error || err.message
+        const url = resolveUrl(err.config?.url)
         if (status === 404) {
-          setError(`Backend API URL is not configured correctly. Failed to resolve endpoint at: ${absoluteUrl} (Status: 404).`);
+          setError(`Endpoint not found (404): ${url}. Check that VITE_API_BASE_URL is correct.`)
         } else if (status >= 500) {
-          setError(`500 Backend Error: ${msg} at ${absoluteUrl}`);
+          setError(`Server error (${status}): ${msg}`)
         } else {
-          setError(`API Error (${status}): ${msg} at ${absoluteUrl}`);
+          setError(`Request failed (${status}): ${msg}`)
         }
       } else if (err.request) {
-        const endpoint = err.config?.url || '';
-        let absoluteUrl = endpoint;
-        const baseUrl = import.meta.env.VITE_API_BASE_URL || '';
-        if (baseUrl && !absoluteUrl.startsWith('http')) {
-          const base = baseUrl.endsWith('/') ? baseUrl.slice(0, -1) : baseUrl;
-          const path = absoluteUrl.startsWith('/') ? absoluteUrl : `/${absoluteUrl}`;
-          absoluteUrl = `${base}${path}`;
-        }
-        setError(`Backend API URL is not configured correctly or is unreachable. Failed to connect to: ${absoluteUrl || 'N/A'}`);
+        const url = resolveUrl(err.config?.url)
+        setError(`Cannot reach backend at ${url || 'the configured URL'}. The service may still be starting — please try again in a moment.`)
       } else {
-        setError(`Error: ${err.message}`);
+        setError(`Unexpected error: ${err.message}`)
       }
     } finally {
       setLoading(false)
@@ -116,29 +135,35 @@ export default function InputForm() {
         
         {/* Passive Status Indicator */}
         <div className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] sm:text-xs font-semibold border transition-colors duration-300 ${
-          systemStatus === 'online' 
-            ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' 
+          systemStatus === 'online'
+            ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
             : systemStatus === 'capacity_limited'
             ? 'bg-amber-500/10 text-amber-400 border-amber-500/20'
-            : 'bg-slate-500/10 text-text-dim border-slate-500/20'
+            : systemStatus === 'warming_up'
+            ? 'bg-slate-500/10 text-text-dim border-slate-500/20'
+            : 'bg-transparent border-transparent' // 'unknown' — render nothing visible
         }`}>
-          <span className="relative flex h-2 w-2">
-            {systemStatus === 'warming_up' && (
-              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-slate-400 opacity-75"></span>
-            )}
-            <span className={`relative inline-flex rounded-full h-2 w-2 ${
-              systemStatus === 'online'
-                ? 'bg-emerald-500'
-                : systemStatus === 'capacity_limited'
-                ? 'bg-amber-500'
-                : 'bg-slate-500'
-            }`} />
-          </span>
-          <span>
-            {systemStatus === 'online' && 'AI Service Online'}
-            {systemStatus === 'capacity_limited' && 'AI Capacity Limited'}
-            {systemStatus === 'warming_up' && 'Warming Up'}
-          </span>
+          {systemStatus !== 'unknown' && (
+            <>
+              <span className="relative flex h-2 w-2">
+                {systemStatus === 'warming_up' && (
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-slate-400 opacity-75"></span>
+                )}
+                <span className={`relative inline-flex rounded-full h-2 w-2 ${
+                  systemStatus === 'online'
+                    ? 'bg-emerald-500'
+                    : systemStatus === 'capacity_limited'
+                    ? 'bg-amber-500'
+                    : 'bg-slate-500'
+                }`} />
+              </span>
+              <span>
+                {systemStatus === 'online' && 'AI Service Online'}
+                {systemStatus === 'capacity_limited' && 'AI Capacity Limited'}
+                {systemStatus === 'warming_up' && 'Warming Up'}
+              </span>
+            </>
+          )}
         </div>
       </div>
 
@@ -252,12 +277,16 @@ export default function InputForm() {
         {loading ? (
           <>
             <span className="premium-loader" />
-            <span>{systemStatus === 'warming_up' ? 'Waking AI Service...' : 'Verification Running…'}</span>
+            <span>
+              {systemStatus === 'warming_up'
+                ? 'Waking AI Service…'
+                : 'Verification Running…'}
+            </span>
           </>
         ) : (
           <>
             <Sparkles size={16} />
-            <span>Analyze Credibility & Bias</span>
+            <span>Analyze Credibility &amp; Bias</span>
           </>
         )}
       </button>
