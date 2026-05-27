@@ -182,6 +182,42 @@ async def lifespan(app: FastAPI):
     app.state.boot_stage = "ready"
     startup_duration = time.perf_counter() - start_time
     logger.info("[INSTRUMENTATION] SERVICE_READY | Startup Duration: %.3fs", startup_duration)
+
+    # ── Eureka Registration ───────────────────────────────────────────────────
+    # Register this service with the Eureka registry so the Spring Boot gateway
+    # can discover it dynamically. Skipped if EUREKA_SERVER_URL is not set.
+    app.state.eureka_enabled = False
+    if settings.eureka_server_url:
+        try:
+            import py_eureka_client.eureka_client as eureka_client
+            await eureka_client.init_async(
+                eureka_server=settings.eureka_server_url,
+                app_name="truthstream-ai-service",
+                instance_port=settings.instance_port,
+                instance_host=settings.instance_host,
+                # Heartbeat tuning — match the lease config on the Eureka server.
+                # Sends a heartbeat every 30s; lease expires after 90s of silence.
+                renewal_interval_in_secs=30,
+                duration_in_secs=90,
+                # Health check URL so Eureka can verify UP status.
+                health_check_url=f"http://{settings.instance_host}:{settings.instance_port}/health",
+                status_page_url=f"http://{settings.instance_host}:{settings.instance_port}/",
+            )
+            app.state.eureka_enabled = True
+            logger.info(
+                "[EUREKA] Registered as truthstream-ai-service on %s (host=%s, port=%d)",
+                settings.eureka_server_url,
+                settings.instance_host,
+                settings.instance_port,
+            )
+        except Exception as exc:
+            # Eureka failure is non-fatal — service still works via static URL fallback.
+            logger.warning(
+                "[EUREKA] Registration failed (non-fatal, fallback routing still active): %s", exc
+            )
+    else:
+        logger.info("[EUREKA] EUREKA_SERVER_URL not set. Skipping registration (static URL mode).")
+
     yield
 
     # ── Shutdown ─────────────────────────────────────────────
@@ -203,6 +239,16 @@ async def lifespan(app: FastAPI):
     await app.state.http_client.aclose()
     await close_db_pool(app.state.db_pool)
     await app.state.redis.aclose()
+
+    # ── Eureka Deregistration ─────────────────────────────────────────────────
+    if getattr(app.state, "eureka_enabled", False):
+        try:
+            import py_eureka_client.eureka_client as eureka_client
+            eureka_client.stop()
+            logger.info("[EUREKA] Deregistered from Eureka registry.")
+        except Exception as exc:
+            logger.warning("[EUREKA] Deregistration error (non-fatal): %s", exc)
+
     logger.info("AI service stopped.")
 
 

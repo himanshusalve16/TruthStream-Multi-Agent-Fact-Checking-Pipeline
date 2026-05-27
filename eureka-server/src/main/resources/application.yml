@@ -1,0 +1,54 @@
+spring:
+  application:
+    name: truthstream-eureka
+
+server:
+  # Render injects $PORT; fall back to 8761 for local Docker.
+  port: ${PORT:8761}
+
+eureka:
+  instance:
+    hostname: ${RENDER_EXTERNAL_HOSTNAME:localhost}
+    # Use the injected hostname, not resolved IP, so the dashboard URL
+    # shown to clients is the correct public Render URL.
+    prefer-ip-address: false
+
+  client:
+    # This IS the registry — it must NOT register with itself.
+    register-with-eureka: false
+    fetch-registry: false
+    service-url:
+      defaultZone: http://${eureka.instance.hostname}:${server.port}/eureka/
+
+  server:
+    # ── Free-tier resilience ─────────────────────────────────────────────────
+    # Self-preservation keeps evicted instances in the registry when >85% of
+    # heartbeats are missed — designed for network partitions in large clusters.
+    # On Render free tier, ALL services sleep simultaneously, so self-preservation
+    # would accumulate stale ghost registrations. Disable it.
+    enable-self-preservation: false
+
+    # How often Eureka checks for expired leases (ms). Default 60 000 ms.
+    # Faster eviction so the dashboard reflects sleep/wake transitions sooner.
+    eviction-interval-timer-in-ms: 15000
+
+    # Minimum number of renewals per minute required to trigger self-preservation.
+    # Irrelevant when self-preservation is disabled; kept explicit for clarity.
+    renewal-percent-threshold: 0.85
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      show-details: always
+
+logging:
+  level:
+    com.netflix.eureka: WARN
+    com.netflix.discovery: WARN
+    org.springframework.cloud.netflix: INFO
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n"

@@ -16,13 +16,18 @@ flowchart TD
   subgraph Docker Network
     Gateway[Spring Boot API Gateway\n:8080]
     FastAPI[FastAPI AI Service\n:8000]
+    Eureka[Eureka Server\n:8761]
     Postgres[(PostgreSQL + pgvector\n:5432)]
     Redis[(Redis 7\n:6379)]
   end
 
   Browser -- HTTP POST /api/jobs --> Gateway
   Browser -- HTTP GET /api/jobs/{id}/stream --> Gateway
-  Gateway -- HTTP POST /internal/jobs --> FastAPI
+  
+  Gateway -- Register & Discover --> Eureka
+  FastAPI -- Register --> Eureka
+  
+  Gateway -- HTTP POST /internal/jobs (discovered url) --> FastAPI
   Gateway -- Redis SUBSCRIBE job:{id}:events --> Redis
   FastAPI -- Redis LPUSH job_queue --> Redis
   FastAPI -- BRPOP job_queue --> Worker[Async Worker Thread]

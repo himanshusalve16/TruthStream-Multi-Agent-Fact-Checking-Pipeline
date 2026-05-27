@@ -34,44 +34,42 @@ TruthStream automates this entire process using a cooperative **multi-agent syst
 
 ## System Architecture
 
-TruthStream consists of five containerized services orchestrated via Docker:
+TruthStream is designed as a split-microservice architecture registered with Eureka Service Discovery (Phase 2):
 
 ```
-                  ┌──────────────────────────────┐
-                  │        User Browser          │
-                  └──────────────┬───────────────┘
-                     HTTP POST   │   GET SSE
-                     /api/jobs   │   /jobs/{id}/stream
-                                 ▼
-                  ┌──────────────────────────────┐
-                  │    Spring Boot API Gateway   │
-                  │         (Port 8080)          │
-                  └──────┬────────────────┬──────┘
-             HTTP POST   │                │   Redis SUBSCRIBE
-        /internal/jobs   │                │   job:{id}:events
-                         ▼                ▼
-┌──────────────────────────────┐   ┌──────────────┐
-│      FastAPI AI Service      │   │    Redis     │
-│         (Port 8000)          │   │ (Port 6379)  │
-└──────────────┬───────────────┘   └──────▲───────┘
-   Async Pool  │                          │
-   BRPOP Queue │                          │
-               ▼                          │
-┌──────────────────────────────┐          │   Redis PUBLISH
-│    Async Workers (Fast/Slow) ├──────────┘   job:{id}:events
-└────┬────────────────────┬────┘
-     │                    │
-     ▼                    ▼
-┌────────────┐   ┌────────────────────────┐
-│ Gemini API │   │ PostgreSQL + pgvector  │
-└────────────┘   │      (Port 5432)       │
-                 └────────────────────────┘
+                        ┌──────────────────────────────┐
+                        │         User Browser         │
+                        └──────────────┬───────────────┘
+                           HTTP POST   │   GET SSE
+                           /api/jobs   │   /jobs/{id}/stream
+                                       ▼
+ ┌────────────────────────────────────────────────────────────────────────┐
+ │ 1. Gateway & Orchestration Service (Spring Boot - Port 8080)           │
+ └──────┬──────────────────────────────┬───────────────────────────▲──────┘
+        │                              │                           │
+        │ LPUSH Job ID                 │ HTTP / Eureka             │ Pub/Sub
+        ▼                              ▼                           │
+ ┌──────────────┐             ┌─────────────────┐                  │
+ │ Redis Queue  │             │  Eureka Server  │                  │
+ └──────────────┘             │   (Port 8761)   │                  │
+        ▲                     └─────────────────┘                  │
+        │ BRPOP Job ID                 ▲                           │
+        │                              │ Register / Discovery      │
+ ┌──────┴──────────────────────────────┴───────────────────────────┴──────┐
+ │ 2. AI Execution Service (FastAPI - Port 8000)                          │
+ └──────┬──────────────────────────────┬───────────────────────────┬──────┘
+        │                              │                           │
+        ▼                              ▼                           ▼
+ ┌──────────────┐             ┌────────────┐              ┌──────────────┐
+ │ Gemini API   │             │ Redis Pub  │              │ PostgreSQL   │
+ └──────────────┘             └────────────┘              └──────────────┘
 ```
 
 ### Technology Stack
 - **Frontend**: React 19, Vite 8, TailwindCSS v4, TypeScript, D3.js
-- **API Gateway**: Spring Boot 3.2, Spring MVC Async Emitters, Lettuce Redis
-- **AI Service**: Python 3.12, FastAPI, asyncpg, Google GenAI SDK (Gemini 2.5 Flash & text-embedding-004)
+- **Gateway & Orchestration Service**: Spring Boot 3.2, Spring MVC Async Emitters, Lettuce Redis
+- **AI Execution Service**: Python 3.12, FastAPI, asyncpg, Google GenAI SDK (Gemini 2.5 Flash & text-embedding-004), py-eureka-client
+- **Service Registry**: Netflix Eureka Server (Spring Cloud / Port 8761)
 - **Database**: PostgreSQL 16 + pgvector
 - **Broker / Cache**: Redis 7 (Queues & Pub/Sub messaging)
 
@@ -122,6 +120,7 @@ docker compose ps
 | Service | Access URL | Purpose |
 |---|---|---|
 | **Frontend UI** | [http://localhost:3000](http://localhost:3000) | Main user interface |
+| **Eureka Dashboard** | [http://localhost:8761](http://localhost:8761) | Service discovery registry console (Phase 2) |
 | **Spring Boot Actuator** | [http://localhost:8080/actuator/health](http://localhost:8080/actuator/health) | Gateway health status |
 | **FastAPI Docs** | [http://localhost:8000/docs](http://localhost:8000/docs) | AI service documentation & testing |
 | **FastAPI Health** | [http://localhost:8000/health](http://localhost:8000/health) | Ultra-lightweight keepalive probe |

@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     @property
     def redis_url(self) -> str:
         return f"redis://{self.redis_host}:{self.redis_port}"
+
     gemini_api_key_1: str = "replace-me"
     gemini_api_key_2: str | None = None
     gemini_api_key_3: str | None = None
@@ -27,6 +28,20 @@ class Settings(BaseSettings):
     serpapi_key: str = "replace-me"  # optional; DuckDuckGo used if unset or empty
     internal_api_secret: str = "replace-me"
     test_mode: bool = False
+
+    # ── Eureka Service Discovery ──────────────────────────────────────────────
+    # Set EUREKA_SERVER_URL to the deployed Eureka registry URL to enable
+    # service registration. Leave unset to skip Eureka (static URL mode).
+    # Example: https://truthstream-eureka.onrender.com/eureka/
+    eureka_server_url: str | None = None
+
+    # Hostname this instance advertises to Eureka.
+    # On Render: set INSTANCE_HOST to ${RENDER_EXTERNAL_HOSTNAME}
+    # In Docker Compose: defaults to "ai-service" (Docker DNS name)
+    instance_host: str = "ai-service"
+
+    # Port this instance listens on (internal, before Render TLS termination).
+    instance_port: int = 8000
 
     class Config:
         # In Docker, env vars come from the compose environment block.

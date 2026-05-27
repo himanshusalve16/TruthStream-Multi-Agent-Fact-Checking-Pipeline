@@ -6,10 +6,11 @@ version: "3.9"
 # Single command: docker compose up --build
 #
 # Service startup order:
-#   db + redis (healthy) → ai-service (healthy) → backend (healthy) → frontend
+#   db + redis (healthy) → eureka-server (started) → ai-service (healthy)
+#                                                  → backend (healthy) → frontend
 #
 # All inter-service communication uses Docker internal DNS names:
-#   db, redis, ai-service, backend
+#   db, redis, ai-service, backend, eureka-server
 # ─────────────────────────────────────────────────────────────────────────────
 
 services:
@@ -56,6 +57,30 @@ services:
     networks:
       - internal
 
+  # ── Eureka Service Registry ────────────────────────────────────────────────
+  eureka-server:
+    build:
+      context: ./eureka-server
+      dockerfile: Dockerfile
+    container_name: truthstream-eureka
+    restart: on-failure:5
+    ports:
+      - "${EUREKA_PORT:-8761}:8761"
+    environment:
+      PORT: 8761
+      # In Docker, eureka.instance.hostname is not a Render hostname —
+      # use the Docker service name so the dashboard links resolve correctly.
+      RENDER_EXTERNAL_HOSTNAME: eureka-server
+    healthcheck:
+      # /actuator/health returns {"status":"UP"} when the registry is fully started.
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8761/actuator/health | grep -q '\"status\":\"UP\"'"]
+      interval: 15s
+      timeout: 10s
+      retries: 8
+      start_period: 30s
+    networks:
+      - internal
+
   # ── FastAPI AI Service ─────────────────────────────────────────────────────
   ai-service:
     build:
@@ -85,11 +110,23 @@ services:
       INTERNAL_API_SECRET: ${INTERNAL_API_SECRET}
       # Propagate to Python logging
       LOG_LEVEL:           ${LOG_LEVEL:-INFO}
+      # Eureka — registers this service so the gateway can discover it.
+      # In Docker Compose: points at the eureka-server container.
+      EUREKA_SERVER_URL:   http://eureka-server:8761/eureka/
+      # The hostname this instance advertises to Eureka (Docker DNS name).
+      INSTANCE_HOST:       ai-service
+      INSTANCE_PORT:       8000
     depends_on:
       db:
         condition: service_healthy
       redis:
         condition: service_healthy
+      eureka-server:
+        # Use service_started (not service_healthy) so ai-service doesn't
+        # wait for eureka's 30s healthcheck window before booting.
+        # The py-eureka-client registration retries internally if eureka is
+        # not yet fully ready.
+        condition: service_started
     healthcheck:
       # /health is a fast, dependency-free endpoint
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\""]
@@ -100,7 +137,7 @@ services:
     networks:
       - internal
 
-  # ── Spring Boot Backend ────────────────────────────────────────────────────
+  # ── Spring Boot Backend (Gateway) ──────────────────────────────────────────
   backend:
     build:
       context: ./backend
@@ -117,7 +154,7 @@ services:
       # Redis — always Docker internal DNS
       SPRING_DATA_REDIS_HOST:     redis
       SPRING_DATA_REDIS_PORT:     6379
-      # FastAPI — always Docker internal DNS, never localhost
+      # FastAPI — static fallback URL (used when Eureka is unavailable)
       FASTAPI_BASE_URL:           http://ai-service:8000
       # JWT
       JWT_SECRET:                 ${JWT_SECRET}
@@ -126,6 +163,10 @@ services:
       INTERNAL_API_SECRET:        ${INTERNAL_API_SECRET}
       # JVM tuning for containers
       JAVA_OPTS:                  "-XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0"
+      # Eureka — gateway registers itself and discovers the AI service.
+      # Points at the Docker eureka-server container.
+      EUREKA_CLIENT_SERVICEURL_DEFAULTZONE: http://eureka-server:8761/eureka/
+      EUREKA_CLIENT_ENABLED:      "true"
     depends_on:
       db:
         condition: service_healthy
@@ -133,6 +174,8 @@ services:
         condition: service_healthy
       ai-service:
         condition: service_healthy
+      eureka-server:
+        condition: service_started
     healthcheck:
       # Spring Actuator health endpoint — returns 200 when fully ready
       test: ["CMD-SHELL", "wget -qO- http://localhost:8080/actuator/health | grep -q '\"status\":\"UP\"'"]
