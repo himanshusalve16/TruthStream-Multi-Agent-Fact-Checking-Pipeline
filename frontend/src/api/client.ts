@@ -53,6 +53,8 @@ export const jobs = {
     client.post<JobStatus>(`/api/jobs/${jobId}/cancel`),
   checkReady: () =>
     client.get<{ status: 'ready' | 'waking' | 'sleeping' | 'degraded'; details?: string }>('/api/ready'),
+  checkHealth: () =>
+    client.get<{ status: 'ok' | 'degraded' | 'sleeping'; details?: string }>('/api/health'),
 }
 
 export interface SourceDto {

@@ -231,6 +231,9 @@ async def root():
 @app.get("/health")
 async def health():
     """Ultra-lightweight health endpoint returning plain tiny JSON, no logging or processing."""
+    from services.gemini import provider_registry
+    if not provider_registry.check_availability():
+        return {"status": "degraded"}
     return {"status": "ok"}
 
 

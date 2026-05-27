@@ -11,8 +11,7 @@ export default function InputForm() {
   const [text, setText] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
-  const [systemStatus, setSystemStatus] = useState<'checking' | 'sleeping' | 'waking' | 'ready' | 'degraded'>('checking')
-  const [statusDetail, setStatusDetail] = useState<string>('Checking AI Service status...')
+  const [systemStatus, setSystemStatus] = useState<'online' | 'warming_up' | 'capacity_limited'>('warming_up')
   const navigate = useNavigate()
   const { dispatch } = useJobContext()
 
@@ -22,43 +21,20 @@ export default function InputForm() {
 
     const checkStatus = async () => {
       try {
-        const res = await jobs.checkReady()
+        const res = await jobs.checkHealth()
         if (!active) return
-        
-        const status = res.data.status
-        const details = res.data.details
-        
-        if (status === 'ready') {
-          setSystemStatus('ready')
-          setStatusDetail('Ready')
-        } else if (status === 'waking') {
-          setSystemStatus('waking')
-          setStatusDetail(details || 'Initializing Runtime...')
-          timerId = setTimeout(checkStatus, 3000)
-        } else if (status === 'degraded') {
-          setSystemStatus('degraded')
-          setStatusDetail(details || 'AI Capacity Limited: Provider Cooling Down. Retry Available Soon.')
-          timerId = setTimeout(checkStatus, 3000)
+        if (res.data.status === 'ok') {
+          setSystemStatus('online')
+        } else if (res.data.status === 'degraded') {
+          setSystemStatus('capacity_limited')
         } else {
-          setSystemStatus('sleeping')
-          setStatusDetail(details || 'Waking AI Service...')
-          timerId = setTimeout(checkStatus, 3000)
+          setSystemStatus('warming_up')
         }
-      } catch (err: any) {
+      } catch (err) {
         if (!active) return
-        const responseData = err.response?.data
-        if (responseData && responseData.status === 'waking') {
-          setSystemStatus('waking')
-          setStatusDetail(responseData.details || 'Initializing Runtime...')
-        } else if (responseData && responseData.status === 'degraded') {
-          setSystemStatus('degraded')
-          setStatusDetail(responseData.details || 'AI Capacity Limited: Provider Cooling Down. Retry Available Soon.')
-        } else {
-          setSystemStatus('sleeping')
-          setStatusDetail('Waking AI Service...')
-        }
-        timerId = setTimeout(checkStatus, 3000)
+        setSystemStatus('warming_up')
       }
+      timerId = setTimeout(checkStatus, 30000)
     }
 
     checkStatus()
@@ -132,6 +108,40 @@ export default function InputForm() {
       onSubmit={handleSubmit} 
       className="glass-card p-8 border border-border bg-bg-glass backdrop-blur-xl rounded-2xl shadow-card"
     >
+      {/* Form Header with Passive Status Pill */}
+      <div className="flex items-center justify-between mb-6 border-b border-white/[0.04] pb-4">
+        <span className="text-[10px] sm:text-xs font-bold text-text-dim uppercase tracking-widest">
+          Fact-Check Analyzer
+        </span>
+        
+        {/* Passive Status Indicator */}
+        <div className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] sm:text-xs font-semibold border transition-colors duration-300 ${
+          systemStatus === 'online' 
+            ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' 
+            : systemStatus === 'capacity_limited'
+            ? 'bg-amber-500/10 text-amber-400 border-amber-500/20'
+            : 'bg-slate-500/10 text-text-dim border-slate-500/20'
+        }`}>
+          <span className="relative flex h-2 w-2">
+            {systemStatus === 'warming_up' && (
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-slate-400 opacity-75"></span>
+            )}
+            <span className={`relative inline-flex rounded-full h-2 w-2 ${
+              systemStatus === 'online'
+                ? 'bg-emerald-500'
+                : systemStatus === 'capacity_limited'
+                ? 'bg-amber-500'
+                : 'bg-slate-500'
+            }`} />
+          </span>
+          <span>
+            {systemStatus === 'online' && 'AI Service Online'}
+            {systemStatus === 'capacity_limited' && 'AI Capacity Limited'}
+            {systemStatus === 'warming_up' && 'Warming Up'}
+          </span>
+        </div>
+      </div>
+
       {/* Sliding Pill Tab Switcher */}
       <div className="relative flex p-1.5 bg-slate-950/80 rounded-xl border border-border mb-6">
         {(['url', 'text'] as const).map((t) => {
@@ -232,68 +242,17 @@ export default function InputForm() {
         </motion.div>
       )}
 
-      {/* Display System Status banner when not ready */}
-      {systemStatus !== 'ready' && (
-        <motion.div 
-          initial={{ opacity: 0, scale: 0.95 }}
-          animate={{ opacity: 1, scale: 1 }}
-          className={`mt-4 flex items-start gap-2.5 p-3.5 rounded-xl border text-xs sm:text-sm text-left ${
-            systemStatus === 'degraded' 
-              ? 'border-amber-500/20 bg-amber-500/5 text-amber-300' 
-              : 'border-indigo-500/20 bg-indigo-500/5 text-indigo-300'
-          }`}
-        >
-          <div className="flex-shrink-0 mt-0.5">
-            {systemStatus === 'degraded' ? (
-              <AlertCircle size={16} className="text-amber-400" />
-            ) : (
-              <span className="relative flex h-2 w-2">
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-indigo-400 opacity-75"></span>
-                <span className="relative inline-flex rounded-full h-2 w-2 bg-indigo-500"></span>
-              </span>
-            )}
-          </div>
-          <div>
-            <span className={`font-bold uppercase tracking-wider text-[10px] block mb-0.5 ${
-              systemStatus === 'degraded' ? 'text-amber-400' : 'text-white'
-            }`}>
-              {systemStatus === 'degraded' ? 'AI Capacity Limited' : 'AI Service Status'}
-            </span>
-            <p className="opacity-90">
-              {systemStatus === 'checking' && 'Verifying runtime status...'}
-              {systemStatus === 'sleeping' && 'Waking AI Service... (Render free-tier cold start, this may take 15–30 seconds)'}
-              {systemStatus === 'waking' && `${statusDetail}...`}
-              {systemStatus === 'degraded' && `${statusDetail}`}
-            </p>
-          </div>
-        </motion.div>
-      )}
-
       {/* Submit Button */}
       <button
         id="submit-btn"
         type="submit"
         className="btn-premium-primary w-full mt-6 flex items-center justify-center gap-2 py-3.5 rounded-xl cursor-pointer"
-        disabled={loading || (systemStatus !== 'ready' && systemStatus !== 'degraded') || (tab === 'url' ? !url : !text)}
+        disabled={loading || (tab === 'url' ? !url : !text)}
       >
-        {systemStatus !== 'ready' && systemStatus !== 'degraded' ? (
+        {loading ? (
           <>
             <span className="premium-loader" />
-            <span>
-              {systemStatus === 'checking' && 'Checking System Status...'}
-              {systemStatus === 'sleeping' && 'Waking AI Service...'}
-              {systemStatus === 'waking' && statusDetail}
-            </span>
-          </>
-        ) : loading ? (
-          <>
-            <span className="premium-loader" />
-            <span>Verification Running…</span>
-          </>
-        ) : systemStatus === 'degraded' ? (
-          <>
-            <Sparkles size={16} />
-            <span>Run Limited Verification</span>
+            <span>{systemStatus === 'warming_up' ? 'Waking AI Service...' : 'Verification Running…'}</span>
           </>
         ) : (
           <>

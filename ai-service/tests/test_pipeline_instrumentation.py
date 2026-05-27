@@ -97,3 +97,23 @@ async def test_log_lifecycle_async():
     with patch("orchestration.pipeline_router.queries.insert_audit_log", new_callable=AsyncMock) as mock_insert:
         await log_lifecycle_async(mock_pool, "test-job-id", "TEST_ACTION", details={"x": 1})
         mock_insert.assert_awaited_once_with(mock_pool, "test-job-id", None, "TEST_ACTION", {"x": 1})
+
+
+@pytest.mark.asyncio
+async def test_health_endpoint(monkeypatch):
+    """Verify that the health endpoint returns degraded if provider availability check fails."""
+    from main import health
+    import time
+    
+    # Test healthy/online status
+    monkeypatch.setattr(provider_registry, "available", True)
+    monkeypatch.setattr(provider_registry, "cooldown_until", 0.0)
+    res_healthy = await health()
+    assert res_healthy == {"status": "ok"}
+    
+    # Test degraded status
+    monkeypatch.setattr(provider_registry, "available", False)
+    monkeypatch.setattr(provider_registry, "cooldown_until", time.time() + 1000)
+    res_degraded = await health()
+    assert res_degraded == {"status": "degraded"}
+

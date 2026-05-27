@@ -94,8 +94,13 @@ public class FastApiClient {
                 .retrieve()
                 .bodyToMono(Map.class)
                 .map(body -> {
-                    if (body != null && "ok".equals(body.get("status"))) {
-                        return "healthy";
+                    if (body != null) {
+                        String status = (String) body.get("status");
+                        if ("ok".equals(status)) {
+                            return "healthy";
+                        } else if ("degraded".equals(status)) {
+                            return "degraded";
+                        }
                     }
                     return "sleeping";
                 })

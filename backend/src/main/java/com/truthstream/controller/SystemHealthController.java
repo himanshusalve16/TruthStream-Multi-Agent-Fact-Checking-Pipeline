@@ -40,4 +40,24 @@ public class SystemHealthController {
                             .body(Map.of("status", "sleeping", "details", e.getMessage())));
                 });
     }
+
+    @GetMapping("/health")
+    public Mono<ResponseEntity<Map<String, String>>> getSystemHealth() {
+        return fastApiClient.checkHealth()
+                .map(status -> {
+                    if ("healthy".equals(status)) {
+                        return ResponseEntity.ok(Map.of("status", "ok"));
+                    } else if ("degraded".equals(status)) {
+                        return ResponseEntity.ok(Map.of("status", "degraded"));
+                    } else {
+                        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                                .body(Map.of("status", "sleeping", "details", "AI service is offline or sleeping"));
+                    }
+                })
+                .onErrorResume(e -> {
+                    log.warn("Failed to check FastAPI health: {}", e.getMessage());
+                    return Mono.just(ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                            .body(Map.of("status", "sleeping", "details", e.getMessage())));
+                });
+    }
 }
