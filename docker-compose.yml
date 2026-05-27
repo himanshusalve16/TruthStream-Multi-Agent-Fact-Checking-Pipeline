@@ -114,6 +114,7 @@ services:
       # In Docker Compose: points at the eureka-server container.
       EUREKA_SERVER_URL:   http://eureka-server:8761/eureka/
       # The hostname this instance advertises to Eureka (Docker DNS name).
+      # Must be the container's Docker service name for intra-compose resolution.
       INSTANCE_HOST:       ai-service
       INSTANCE_PORT:       8000
     depends_on:
@@ -167,6 +168,10 @@ services:
       # Points at the Docker eureka-server container.
       EUREKA_CLIENT_SERVICEURL_DEFAULTZONE: http://eureka-server:8761/eureka/
       EUREKA_CLIENT_ENABLED:      "true"
+      # Docker hostname for Eureka instance registration.
+      # Without this, the fallback resolves to "truthstream-gateway" (not a
+      # routable Docker DNS name). "backend" IS the Docker container DNS name.
+      EUREKA_INSTANCE_HOSTNAME:   backend
     depends_on:
       db:
         condition: service_healthy

@@ -148,7 +148,7 @@ The `FastApiClient` in the Spring Boot gateway resolves the AI service URL on
 
 ```
 1. Try Eureka:
-   discoveryClient.getInstances("truthstream-ai-service")
+   discoveryClient.getInstances("TRUTHSTREAM-AI-SERVICE")
    → if list is non-empty → use instances[0].getUri()
 
 2. Fallback (if Eureka unavailable or returns empty list):
@@ -160,7 +160,7 @@ This is implemented in `FastApiClient.resolveBaseUrl()`:
 private String resolveBaseUrl() {
     try {
         List<ServiceInstance> instances =
-            discoveryClient.getInstances("truthstream-ai-service");
+            discoveryClient.getInstances("TRUTHSTREAM-AI-SERVICE");
         if (instances != null && !instances.isEmpty()) {
             return instances.get(0).getUri().toString();
         }
@@ -172,8 +172,9 @@ private String resolveBaseUrl() {
 ```
 
 > [!IMPORTANT]
-> The fallback URL (`FASTAPI_BASE_URL`) is **always set** in production. This guarantees
-> the system works even when the Eureka service is sleeping or not yet deployed.
+> The service lookup uses **uppercase** `"TRUTHSTREAM-AI-SERVICE"`. Eureka stores all
+> app names in uppercase regardless of how the client registers. Using lowercase would
+> return empty results on some Spring Cloud builds.
 
 ---
 
@@ -251,6 +252,15 @@ After deploy, visit: `https://truthstream-eureka.onrender.com`
 | `EUREKA_CLIENT_SERVICEURL_DEFAULTZONE` | `https://truthstream-eureka.onrender.com/eureka/` |
 | `EUREKA_CLIENT_ENABLED` | `true` |
 
+> [!CAUTION]
+> The URL **must include `/eureka/`** with a trailing slash.
+> `https://truthstream-eureka.onrender.com` (without the suffix) causes
+> `registration status: 404`. See [Troubleshooting](#9-troubleshooting-eureka-registration).
+
+> [!NOTE]
+> `RENDER_EXTERNAL_HOSTNAME` is auto-injected by Render into the gateway service.
+> It is used as the instance hostname registered in Eureka. You do not need to set it manually.
+
 All other env vars remain unchanged.
 
 ---
@@ -297,30 +307,94 @@ The compose file automatically:
 
 ## 9. Troubleshooting Eureka Registration
 
-### Services not showing in Eureka dashboard
+### `registration status: 404` — Root Cause
 
-1. Check Eureka server logs: `docker compose logs eureka-server`
-2. Verify the service has booted: `docker compose logs ai-service | grep EUREKA`
-3. Wait 30–90s after boot — registration + first heartbeat cycle takes time
-4. Check network: all services must be on the same Docker network (`internal`)
+This log line means the Eureka server **is reachable** but the registration
+endpoint path is wrong. The most common cause is a missing or malformed
+`/eureka/` suffix in the `defaultZone` URL.
 
-### Gateway not discovering AI service via Eureka
+Spring Boot constructs the registration URL by concatenating:
+```
+{defaultZone}apps/{APP_NAME}
+```
 
-1. Look for the log line: `AI service URL resolved via Eureka: ...`
-2. If you see: `Eureka returned no instances` → AI service hasn't registered yet
-3. The fallback URL is always used in this case — check `FASTAPI_BASE_URL`
+| `EUREKA_CLIENT_SERVICEURL_DEFAULTZONE` value | Registration URL sent to Eureka | HTTP Result |
+|---|---|---|
+| `https://...onrender.com/eureka/` ✅ | `.../eureka/apps/TRUTHSTREAM-GATEWAY` | **200 OK** |
+| `https://...onrender.com/` ❌ | `.../apps/TRUTHSTREAM-GATEWAY` | **404 Not Found** |
+| `https://...onrender.com` ❌ | `...onrender.comapps/...` (malformed) | **Connection Error** |
+| `http://...onrender.com/eureka/` ❌ | Render redirects HTTP→HTTPS; client doesn't follow | **Connection Error** |
 
-### Render: service shows as DOWN in dashboard
+**The correct value:**
+```
+EUREKA_CLIENT_SERVICEURL_DEFAULTZONE=https://truthstream-eureka.onrender.com/eureka/
+```
 
-1. Ensure `INSTANCE_HOST` is the correct Render external hostname (not localhost)
-2. Ensure `INSTANCE_PORT` matches Render's internal port (usually `10000`)
-3. Check that the Eureka server is awake and not sleeping
+---
 
-### Connection timeout on free tier
+### Gateway appears in logs but missing from dashboard
 
-Render free services can take 30–60s to wake up. The gateway fallback routing ensures
-job dispatch still works while services wake. The Eureka dashboard may show the instance
-as DOWN or absent until the heartbeat resumes.
+1. Check that `RENDER_EXTERNAL_HOSTNAME` is visible in Render environment — Render injects it automatically; verify it in Service → Environment.
+2. Look in gateway logs for: `Registering application TRUTHSTREAM-GATEWAY with eureka with status UP`
+3. The Eureka dashboard auto-refreshes every 30s. Wait 60s after gateway startup.
+4. If still missing: the instance may be registered with a non-routable hostname. Check `eureka.instance.hostname` in logs.
+
+---
+
+### HTTP vs HTTPS redirect failure
+
+Render enforces HTTPS. If you set `EUREKA_CLIENT_SERVICEURL_DEFAULTZONE` with `http://`,
+Render's CDN redirects to `https://` — but the Netflix Eureka HTTP client **does not follow
+redirects**. Registration silently fails. Always use `https://` for Render URLs.
+
+---
+
+### AI service registers but gateway can't discover it
+
+The gateway queries Eureka for service ID `TRUTHSTREAM-AI-SERVICE` (uppercase).
+If py-eureka-client registers the AI service under a different app name, discovery
+will return empty. Check that `app_name="truthstream-ai-service"` is set in `main.py`
+— Eureka uppercases it automatically to `TRUTHSTREAM-AI-SERVICE`.
+
+---
+
+### Free-tier wake-up delay
+
+After Render wakes a sleeping service, it takes 30–60s for:
+1. The service to fully boot (DB pool, Redis, Gemini warmup, worker start)
+2. The Eureka registration call to succeed
+3. The gateway to pick up the new instance via registry refresh (15s interval)
+
+During this window, the gateway uses the static `FASTAPI_BASE_URL` fallback automatically.
+
+---
+
+### Expected log lines — successful state
+
+**Eureka Server (truthstream-eureka):**
+```
+Registered instance TRUTHSTREAM-AI-SERVICE/ai-service-w29p.onrender.com with status UP
+Registered instance TRUTHSTREAM-GATEWAY/backend-nccx.onrender.com with status UP
+```
+
+**Gateway (truthstream-gateway):**
+```
+Registering application TRUTHSTREAM-GATEWAY with eureka with status UP
+Sending heartbeat to eureka for app: TRUTHSTREAM-GATEWAY
+Got http response code 200 for request on url
+AI service URL resolved via Eureka: https://ai-service-w29p.onrender.com
+```
+
+**AI Service (truthstream-ai-service):**
+```
+[EUREKA] Registered as truthstream-ai-service on https://truthstream-eureka.onrender.com/eureka/ (host=ai-service-w29p.onrender.com, port=10000)
+```
+
+**When fallback is active (Eureka sleeping):**
+```
+Eureka returned no instances for TRUTHSTREAM-AI-SERVICE. Using static fallback URL.
+```
+This is expected and non-fatal — jobs still dispatch via `FASTAPI_BASE_URL`.
 
 ---
 

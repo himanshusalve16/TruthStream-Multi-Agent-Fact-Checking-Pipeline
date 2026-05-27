@@ -88,8 +88,15 @@ on startup to initialize the application tables (`users`, `articles`, `jobs`, `c
 | `INTERNAL_API_SECRET` | random hex string | Shared secret matching ai-service |
 | `JWT_SECRET` | 64-char hex string | JWT signing secret |
 | `JWT_EXPIRY_MS` | `3600000` | JWT token validity (ms) |
-| `EUREKA_CLIENT_SERVICEURL_DEFAULTZONE` | `https://truthstream-eureka.onrender.com/eureka/` | Online Eureka registry URL |
+| `EUREKA_CLIENT_SERVICEURL_DEFAULTZONE` | `https://truthstream-eureka.onrender.com/eureka/` | Eureka registry URL — **must include `/eureka/` suffix** |
 | `EUREKA_CLIENT_ENABLED` | `true` | Enable Eureka client registration |
+| `RENDER_EXTERNAL_HOSTNAME` | `backend-nccx.onrender.com` | *(auto-injected by Render)* Instance hostname for Eureka |
+
+> [!CAUTION]
+> `EUREKA_CLIENT_SERVICEURL_DEFAULTZONE` **must end with `/eureka/`** (including the trailing slash).
+> Using `https://truthstream-eureka.onrender.com` (without `/eureka/`) causes Spring Boot
+> to send registration to `/apps/TRUTHSTREAM-GATEWAY` instead of `/eureka/apps/TRUTHSTREAM-GATEWAY`,
+> which returns **HTTP 404** and the log line `registration status: 404`.
 
 *Spring Boot exposes port `8080` (Render assigns the actual port via `$PORT`).*
 
@@ -157,42 +164,73 @@ Expected dashboard content:
 
 ---
 
-## 6. Verifying the Deployment
+## 7. Eureka Registration Troubleshooting
 
-Run a smoke test to confirm that services are communicating correctly:
-1. Register a new user account through the frontend UI.
-2. Submit a short text snippet (e.g., "The unemployment rate dropped to 3.4% in 2024"). This runs standard analysis and verifies the database, Redis queue, and Gemini API connections.
-3. Verify that SSE events display in the UI and that the final confidence gauge and verdict render on completion.
+### `registration status: 404`
+
+This is the most common Eureka registration failure. It means the Eureka server
+**is reachable** but the registration endpoint path is wrong.
+
+**Root cause**: `EUREKA_CLIENT_SERVICEURL_DEFAULTZONE` is missing the `/eureka/` suffix.
+
+Spring Boot constructs the registration URL as:
+```
+{defaultZone}apps/{APP_NAME}
+```
+
+| defaultZone value | Registration URL sent | Result |
+|---|---|---|
+| `https://...onrender.com/eureka/` ✅ | `https://...onrender.com/eureka/apps/TRUTHSTREAM-GATEWAY` | **200 OK** |
+| `https://...onrender.com/` ❌ | `https://...onrender.com/apps/TRUTHSTREAM-GATEWAY` | **404** |
+| `https://...onrender.com` ❌ | `https://...onrender.comapps/TRUTHSTREAM-GATEWAY` | **connection error** |
+
+**Fix**: Ensure the env var is set to exactly:
+```
+EUREKA_CLIENT_SERVICEURL_DEFAULTZONE=https://truthstream-eureka.onrender.com/eureka/
+```
+(with `/eureka/` path segment and trailing slash)
 
 ---
 
-## 6. Render Free Tier Keepalive & Cold-Start Mitigation
+### Gateway appears in logs but not in dashboard
 
-When deployed to Render's free tier, containers automatically sleep after 15 minutes of inactivity. This results in startup cold starts of 15–30+ seconds. To mitigate this without adding heavy pipeline load or hitting resource quotas, TruthStream implements a dual-layer keepalive and state-aware health architecture.
+1. Check `RENDER_EXTERNAL_HOSTNAME` is set on the gateway service — Render injects this automatically, verify it appears in the service's environment.
+2. Check `eureka.instance.hostname` in logs: look for `Registering application TRUTHSTREAM-GATEWAY with eureka with status UP`.
+3. The dashboard auto-refreshes every 30s. Wait at least 60s after startup.
 
-### Internal Self-Keepalive Loop
-FastAPI spawns an internal background task (`keepalive_loop`) at startup. Every 5 minutes, it sends a lightweight HTTP ping to its local `/health` endpoint. 
-> [!NOTE]
-> Since Render suspends container processes entirely during sleep, this internal task cannot wake up a fully sleeping container. It serves to keep connections warm and prevent sleep *while* the application is currently active.
+---
 
-### Safe External Waking
-To wake up the container or keep it warm externally, configure uptime monitors (e.g., UptimeRobot or cron-job.org) to ping the `/health` endpoint.
-* **Probing Endpoint**: Hitting `GET /health` returns a tiny JSON `{"status": "ok"}` within 10–50ms.
-* **No Overflow Failures**: This endpoint bypasses database queries, Gemini client initialization, and worker queues, preventing verbose logger traces or SSE stream creation. This guarantees that cron-job.org/UptimeRobot will **never** fail with a `"Failed (output too large)"` or timeout error.
+### `HTTPS vs HTTP` redirect causing registration failure
 
-### Frontend Passive Health Check Monitoring
-To maximize perceived performance, the frontend does not block user input or perform aggressive readiness loops on page load:
-1. When the page loads, the frontend is fully interactive immediately. Users can paste text or URLs and submit them without waiting.
-2. In the background, the frontend queries `/api/health` passively every 30 seconds.
-3. The UI displays the service status in a subtle, compact badge at the top-right of the form:
-   * **`AI Service Online`** (state: `online`)
-   * **`Warming Up`** (state: `warming_up`)
-   * **`AI Capacity Limited`** (state: `capacity_limited`)
-4. If a job is submitted while the service status is `warming_up` (cold-start), the submit button shows `"Waking AI Service..."` only *after* submission begins, preserving perceived speed.
+Render services redirect HTTP to HTTPS. The Spring Boot Eureka client does **not**
+follow HTTP → HTTPS redirects during registration. Always use `https://` in
+`EUREKA_CLIENT_SERVICEURL_DEFAULTZONE`.
+
+---
+
+### Expected successful registration log lines
+
+When registration succeeds, look for these in the gateway logs:
+```
+Registering application TRUTHSTREAM-GATEWAY with eureka with status UP
+Sending heartbeat to eureka for app: TRUTHSTREAM-GATEWAY
+Got http response code 200 for request...
+```
+
+When discovery works, look for:
+```
+AI service URL resolved via Eureka: https://ai-service-w29p.onrender.com
+```
+
+When fallback is active:
+```
+Eureka returned no instances for TRUTHSTREAM-AI-SERVICE. Using static fallback URL.
+```
 
 ---
 
 ## Related Guides
 - [README.md](README.md) — Local development and quick start.
+- [MicroservicesAndEureka.md](MicroservicesAndEureka.md) — Eureka architecture and online dashboard.
 - [API-KEYS-AND-DEPLOYMENT.md](API-KEYS-AND-DEPLOYMENT.md) — Search configuration and API keys.
 - [Working.md](Working.md) — End-to-end architecture and internals.

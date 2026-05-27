@@ -32,8 +32,14 @@ import java.util.UUID;
 @Slf4j
 public class FastApiClient {
 
-    /** Eureka service ID that the FastAPI service registers under. */
-    private static final String AI_SERVICE_ID = "truthstream-ai-service";
+    /**
+     * Eureka service ID that the FastAPI service registers under.
+     * Must be UPPERCASE — Eureka stores all app names in uppercase internally.
+     * py-eureka-client registers as "truthstream-ai-service" which Eureka
+     * canonicalises to "TRUTHSTREAM-AI-SERVICE". Using the uppercase form here
+     * guarantees correct lookup on all Spring Cloud builds.
+     */
+    private static final String AI_SERVICE_ID = "TRUTHSTREAM-AI-SERVICE";
 
     private final WebClient webClient;
     private final String fallbackBaseUrl;
