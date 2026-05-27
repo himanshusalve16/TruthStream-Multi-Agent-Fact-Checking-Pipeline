@@ -1,3 +1,4 @@
+import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import type { Variants } from 'framer-motion'
@@ -14,6 +15,45 @@ import InputForm from '../components/InputForm'
 import TutorialCard from '../components/TutorialCard'
 
 export default function LandingPage() {
+  const [pipelineLoad, setPipelineLoad] = useState(12.4)
+  const [databaseCount, setDatabaseCount] = useState(130)
+  const [avgTime, setAvgTime] = useState(15.4)
+
+  useEffect(() => {
+    // Count up database sources on mount
+    const dbInterval = setInterval(() => {
+      setDatabaseCount(prev => {
+        if (prev < 145) return prev + 1
+        clearInterval(dbInterval)
+        return 145
+      })
+    }, 45)
+
+    // Fluctuate pipeline load slightly to look active
+    const loadInterval = setInterval(() => {
+      setPipelineLoad(prev => {
+        const delta = (Math.random() - 0.5) * 1.6
+        const next = prev + delta
+        return parseFloat(Math.max(4.5, Math.min(22.5, next)).toFixed(1))
+      })
+    }, 3200)
+
+    // Fluctuate avg processing time slightly to look active
+    const timeInterval = setInterval(() => {
+      setAvgTime(prev => {
+        const delta = (Math.random() - 0.5) * 1.2
+        const next = prev + delta
+        return parseFloat(Math.max(12.0, Math.min(22.0, next)).toFixed(1))
+      })
+    }, 4100)
+
+    return () => {
+      clearInterval(dbInterval)
+      clearInterval(loadInterval)
+      clearInterval(timeInterval)
+    }
+  }, [])
+
   // Stagger animation container
   const containerVariants: Variants = {
     hidden: { opacity: 0 },
@@ -96,7 +136,7 @@ export default function LandingPage() {
           {/* Fact Check Input & Walkthrough Grid */}
           <motion.div 
             variants={itemVariants}
-            className="w-full grid grid-cols-1 md:grid-cols-2 lg:grid-cols-12 gap-8 mb-16 items-stretch text-left"
+            className="w-full grid grid-cols-1 lg:grid-cols-12 gap-6 lg:gap-8 mb-16 items-stretch text-left"
           >
             <div className="lg:col-span-7 relative flex flex-col justify-center">
               <div className="absolute -inset-1.5 rounded-2xl bg-gradient-to-r from-accent to-purple-500 opacity-20 blur-xl group-focus-within:opacity-40 transition duration-1000 pointer-events-none" />
@@ -118,20 +158,24 @@ export default function LandingPage() {
                 <Activity size={12} className="text-accent" /> Pipeline Load
               </span>
               <span className="text-lg font-bold text-white font-mono flex items-center gap-2">
-                Optimal <span className="text-xs text-emerald-500 font-semibold bg-emerald-500/10 px-2 py-0.5 rounded-md border border-emerald-500/20">99.8%</span>
+                Nominal <span className="text-xs text-emerald-500 font-semibold bg-emerald-500/10 px-2 py-0.5 rounded-md border border-emerald-500/20 transition-all duration-500">{pipelineLoad}%</span>
               </span>
             </div>
             <div className="flex flex-col gap-1">
               <span className="text-xs text-text-muted font-semibold uppercase tracking-wider flex items-center gap-1.5">
                 <Globe size={12} className="text-purple-400" /> Trusted Databases
               </span>
-              <span className="text-lg font-bold text-white font-mono">140+ Sources</span>
+              <span className="text-lg font-bold text-white font-mono transition-all duration-300">
+                {databaseCount}+ Sources
+              </span>
             </div>
             <div className="flex flex-col gap-1 col-span-2 md:col-span-1">
               <span className="text-xs text-text-muted font-semibold uppercase tracking-wider flex items-center gap-1.5">
                 <TrendingUp size={12} className="text-indigo-400" /> Avg processing time
               </span>
-              <span className="text-lg font-bold text-white font-mono">35 seconds</span>
+              <span className="text-lg font-bold text-white font-mono transition-all duration-500">
+                ~{avgTime} seconds
+              </span>
             </div>
           </motion.div>
 
