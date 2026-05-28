@@ -1,4 +1,5 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
+import { Analytics } from '@vercel/analytics/react'
 import LandingPage from './pages/LandingPage'
 import JobPage from './pages/JobPage'
 
@@ -15,6 +16,7 @@ function App() {
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </JobProvider>
+      <Analytics />
     </BrowserRouter>
   )
 }
