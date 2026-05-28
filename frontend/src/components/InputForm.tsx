@@ -175,7 +175,7 @@ export default function InputForm() {
             <button
               key={t}
               type="button"
-              className={`relative flex-1 py-2.5 text-xs sm:text-sm font-bold rounded-lg cursor-pointer flex items-center justify-center gap-2 transition-colors duration-200 z-10 ${
+              className={`relative flex-1 py-2 sm:py-2.5 text-[11px] sm:text-sm font-bold rounded-lg cursor-pointer flex items-center justify-center gap-1.5 sm:gap-2 transition-colors duration-200 z-10 px-1 ${
                 isActive ? 'text-white' : 'text-text-dim hover:text-white'
               }`}
               onClick={() => {
@@ -190,8 +190,8 @@ export default function InputForm() {
                   transition={{ type: "spring", stiffness: 380, damping: 30 }}
                 />
               )}
-              {t === 'url' ? <Link2 size={15} /> : <FileText size={15} />}
-              <span>{t === 'url' ? 'Check Article URL' : 'Check Text Passage'}</span>
+              {t === 'url' ? <Link2 size={14} className="flex-shrink-0 sm:w-[15px] sm:h-[15px]" /> : <FileText size={14} className="flex-shrink-0 sm:w-[15px] sm:h-[15px]" />}
+              <span className="truncate">{t === 'url' ? 'Check Article URL' : 'Check Text Passage'}</span>
             </button>
           )
         })}
