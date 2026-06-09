@@ -9,7 +9,7 @@ from google.genai import types
 from models.schemas import ClaimSchema, ClaimSourcesResult, SourceSchema
 from services.gemini import execute_gemini_call
 from config import settings
-from services.search import search_web, build_claim_query
+from services.search import search_web_with_fallback, build_claim_query, build_fallback_query
 from services.scraper import scrape_url
 from utils.text import extract_domain
 from utils.quality import score_source, is_paywalled
@@ -109,8 +109,10 @@ def deduplicate_and_filter_sources(results: List[dict], max_needed: int) -> List
 
     removed_count = len(results) - len(unique_results)
     if removed_count > 0:
-        logger.info("[INSTRUMENTATION] EVIDENCE_DUPLICATES_REMOVED | Removed: %d | Remaining: %d | Duplication Ratio: %.2f%%", 
-            removed_count, len(unique_results), (removed_count / len(results)) * 100)
+        logger.info(
+            "[SOURCE] Dedup removed %d duplicates | remaining: %d",
+            removed_count, len(unique_results)
+        )
 
     return unique_results
 
@@ -119,26 +121,66 @@ async def find_sources(
         claim: ClaimSchema,
         redis=None,
         max_sources: int = 6,
-        http_client = None,
+        http_client=None,
         scrape_full_text: bool = False,
         classify_stance: bool = True,
 ) -> ClaimSourcesResult:
     """
-    For a single claim: search → scrape (if enabled) → classify stance.
-    Returns ClaimSourcesResult.
-    """
-    query = build_claim_query(claim.text, claim.claim_type)
-    # Fetch 15 results to have a robust deduplication pool
-    results = await search_web(query, max_results=15, redis=redis, http_client=http_client)
+    For a single claim: search → (optional scrape) → classify stance.
 
-    # Rerank snippets by lexical overlap
+    Improvements over previous version:
+    - Uses search_web_with_fallback() instead of search_web() — automatically
+      retries with a broader query when the primary returns < 3 results.
+    - Both primary and fallback queries are built with the improved builders
+      that remove site-operator restrictions and generate better terms.
+    - Structured diagnostic logging at every step.
+    """
+    claim_id = claim.claim_id or ""
+    claim_short = claim.text[:80]
+
+    primary_query = build_claim_query(claim.text, claim.claim_type)
+    fallback_query = build_fallback_query(claim.text)
+
+    logger.info(
+        "[SOURCE] Starting source lookup | Claim: %s... | Type: %s",
+        claim_short, claim.claim_type
+    )
+    logger.info("[SOURCE] Primary query: %s", primary_query)
+    logger.info("[SOURCE] Fallback query: %s", fallback_query)
+
+    # Fetch 15 results to have a robust deduplication pool
+    results, query_used = await search_web_with_fallback(
+        primary_query=primary_query,
+        fallback_query=fallback_query,
+        max_results=15,
+        redis=redis,
+        http_client=http_client,
+        min_primary_results=3,
+    )
+
+    logger.info(
+        "[SOURCE] Search complete | Results: %d | Query used: %s",
+        len(results), query_used[:80]
+    )
+
+    if not results:
+        logger.warning(
+            "[SOURCE] All search engines returned 0 results | Claim: %s...", claim_short
+        )
+        return ClaimSourcesResult(claim_id=claim_id, sources=[])
+
+    # Rerank snippets by lexical overlap with claim
     results = rank_snippets_by_overlap(claim.text, results)
 
-    # Apply domain diversity and syndication filters (request max_sources + 3 as candidates)
+    # Apply domain diversity and syndication filters
     top_results = deduplicate_and_filter_sources(results, max_needed=max_sources + 3)
 
+    logger.info(
+        "[SOURCE] After dedup | Candidates: %d | Claim: %s...", len(top_results), claim_short
+    )
+
     if not scrape_full_text:
-        # Standard/Fast Path: Rely strictly on search snippets and domain rules without HTTP fetches
+        # Standard/Fast Path: snippet-only, no HTTP fetches
         selected = []
         for i, r in enumerate(top_results[:max_sources]):
             url = r["url"]
@@ -159,7 +201,7 @@ async def find_sources(
                 "quality_score": quality,
             })
     else:
-        # Deep Path: Scrape full text in parallel
+        # Deep Path: scrape full text in parallel
         sem = asyncio.Semaphore(MAX_CONCURRENT_SCRAPES)
 
         async def scrape_one(result: dict, rank: int) -> dict:
@@ -198,7 +240,15 @@ async def find_sources(
         selected = valid[:max_sources]
 
     if not selected:
-        return ClaimSourcesResult(claim_id=claim.claim_id or "", sources=[])
+        logger.warning(
+            "[SOURCE] 0 sources passed dedup/quality filter | Claim: %s...", claim_short
+        )
+        return ClaimSourcesResult(claim_id=claim_id, sources=[])
+
+    logger.info(
+        "[SOURCE] Selected %d sources for stance classification | Claim: %s...",
+        len(selected), claim_short
+    )
 
     # Classify stances via LLM if requested, else default to UNCLEAR
     if classify_stance:
@@ -221,8 +271,12 @@ async def find_sources(
             fetch_status="blocked" if paywalled else s.get("fetch_status", "success"),
         ))
 
-    return ClaimSourcesResult(claim_id=claim.claim_id or "", sources=sources)
+    logger.info(
+        "[SOURCE] Done | Claim: %s... | Sources: %d | Stances: %s",
+        claim_short, len(sources), [s.stance for s in sources]
+    )
 
+    return ClaimSourcesResult(claim_id=claim_id, sources=sources)
 
 
 async def _classify_stances(claim_text: str, sources: List[dict]) -> List[str]:
@@ -256,5 +310,5 @@ async def _classify_stances(claim_text: str, sources: List[dict]) -> List[str]:
                 stances[idx] = item.get("stance", "UNCLEAR")
         return stances
     except Exception as e:
-        logger.error("Stance classification failed: %s", e)
+        logger.error("[SOURCE] Stance classification failed: %s", e)
         return ["UNCLEAR"] * len(sources)

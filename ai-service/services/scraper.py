@@ -87,6 +87,27 @@ def _extract_text(html: str, url: str) -> str:
     return soup.get_text(separator=" ", strip=True)[:MAX_CONTENT_CHARS]
 
 
+def _process_response(response: httpx.Response, url: str) -> tuple[str, str]:
+    """
+    Shared response-processing logic for both the shared-client and fresh-client paths.
+    Returns (text, status).
+    """
+    if response.status_code in (401, 402, 403):
+        return response.text[:500], "blocked"
+    if response.status_code >= 400:
+        return "", f"http_{response.status_code}"
+
+    content_type = response.headers.get("content-type", "")
+    if "text" not in content_type and "html" not in content_type:
+        return "", "non_html"
+
+    text = _extract_text(response.text, url)
+    if not text or len(text) < 50:
+        return "", "empty"
+
+    return text, "success"
+
+
 async def scrape_url(
         url: str,
         redis=None,
@@ -95,23 +116,30 @@ async def scrape_url(
 ) -> tuple[str, str]:
     """
     Fetch and scrape a URL. Returns (text, fetch_status).
-    fetch_status: success|timeout|blocked|empty|ssrf_blocked|error
-    Uses Redis to cache results (including status) to prevent repeating slow requests.
+    fetch_status: success|timeout|blocked|empty|ssrf_blocked|error|non_html|http_NNN
+
+    Fixed: previously the shared http_client path (the common case) missed all
+    status-code checks, content-type gating, and Redis caching because they were
+    nested inside the 'else' branch. Now all response handling runs on both paths.
     """
     if not await _validate_url(url):
         return "", "ssrf_blocked"
 
     # Check Redis cache
+    cache_key = f"scrape_v2:{hashlib.md5(url.encode()).hexdigest()}"
     if redis:
-        cache_key = f"scrape_v2:{hashlib.md5(url.encode()).hexdigest()}"
         try:
             cached_raw = await redis.get(cache_key)
             if cached_raw:
                 import json
                 cached = json.loads(cached_raw.decode())
+                logger.debug("Scrape cache hit: %s", url)
                 return cached.get("text", ""), cached.get("status", "success")
         except Exception:
             pass
+
+    text = ""
+    status = "error"
 
     try:
         if http_client is not None:
@@ -125,39 +153,29 @@ async def scrape_url(
             ) as client:
                 response = await client.get(url)
 
-            if response.status_code in (401, 402, 403):
-                text, status = response.text[:500], "blocked"
-            elif response.status_code >= 400:
-                text, status = "", f"http_{response.status_code}"
+        # ── Unified response processing (runs for both client paths) ──────────
+        if response.status_code in (401, 402, 403):
+            text, status = response.text[:500], "blocked"
+        elif response.status_code >= 400:
+            text, status = "", f"http_{response.status_code}"
+        else:
+            content_type = response.headers.get("content-type", "")
+            if "text" not in content_type and "html" not in content_type:
+                text, status = "", "non_html"
             else:
-                content_type = response.headers.get("content-type", "")
-                if "text" not in content_type and "html" not in content_type:
-                    text, status = "", "non_html"
+                loop = asyncio.get_running_loop()
+                extracted = await loop.run_in_executor(None, _extract_text, response.text, url)
+                if not extracted or len(extracted) < 50:
+                    text, status = "", "empty"
                 else:
-                    loop = asyncio.get_running_loop()
-                    text = await loop.run_in_executor(None, _extract_text, response.text, url)
-                    if not text or len(text) < 50:
-                        text, status = "", "empty"
-                    else:
-                        text, status = text, "success"
+                    text, status = extracted, "success"
+        # ── End unified processing ─────────────────────────────────────────────
 
-            # Cache the outcome (success or failure) in Redis
-            if redis:
-                try:
-                    import json
-                    # Cache successful scrapes for 6 hours, failures/errors for 1 hour to prevent retrying dead/slow links
-                    cache_ttl = ttl if status == "success" else 3600
-                    await redis.setex(cache_key, cache_ttl, json.dumps({
-                        "text": text,
-                        "status": status
-                    }))
-                except Exception:
-                    pass
-
-            return text, status
+        logger.debug("Scrape %s → status=%s len=%d", url, status, len(text))
 
     except httpx.TimeoutException:
         status = "timeout"
+        logger.warning("Scrape timeout: %s", url)
     except httpx.RequestError as e:
         logger.warning("Scrape request error for %s: %s", url, e)
         status = "error"
@@ -165,19 +183,19 @@ async def scrape_url(
         logger.error("Scrape unexpected error for %s: %s", url, e)
         status = "error"
 
-    # Cache errors/timeouts for 1 hour as well to avoid bottlenecking subsequent claims
+    # Cache outcome in Redis (success: 6h, failure: 1h to avoid hammering dead URLs)
     if redis:
         try:
             import json
-            cache_key = f"scrape_v2:{hashlib.md5(url.encode()).hexdigest()}"
-            await redis.setex(cache_key, 3600, json.dumps({
-                "text": "",
+            cache_ttl = ttl if status == "success" else 3600
+            await redis.setex(cache_key, cache_ttl, json.dumps({
+                "text": text,
                 "status": status
             }))
         except Exception:
             pass
 
-    return "", status
+    return text, status
 
 
 def _parse_and_clean_article(html: str) -> str:
