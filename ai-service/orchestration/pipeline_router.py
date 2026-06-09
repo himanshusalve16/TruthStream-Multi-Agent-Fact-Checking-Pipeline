@@ -372,7 +372,7 @@ async def _route_and_execute_pipeline_impl(job_id: str, redis: aioredis.Redis, p
 
     if complexity == "fast":
         await publish_status(redis, job_id, "processing", "Running fast-track analysis...")
-        await run_fast_path_pipeline_flow(job_id, redis, pool, raw_text, cleaned, wc, url_hash, input_url, user_id, start_time, fetch_time, model_call_time)
+        await run_fast_path_pipeline_flow(job_id, redis, pool, raw_text, cleaned, wc, url_hash, input_url, user_id, start_time, fetch_time, model_call_time, http_client)
     elif complexity == "standard":
         await publish_status(redis, job_id, "processing", "Running standard analysis...")
         await run_standard_path_pipeline_flow(job_id, redis, pool, raw_text, cleaned, wc, url_hash, input_url, user_id, start_time, fetch_time, model_call_time, http_client)

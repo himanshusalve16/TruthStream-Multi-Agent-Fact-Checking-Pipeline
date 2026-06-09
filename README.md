@@ -217,8 +217,3 @@ The AI service includes dedicated observability and status routes:
 - **Postgres Port Conflicts**: If you have a local PostgreSQL instance running on port 5432, the database container will fail to start. Update `DB_PORT=5433` in `.env` and restart.
 - **Gemini Key Issues**: If you see quota limits or key validation failures, you can configure multiple API keys (`GEMINI_API_KEY_1`, `GEMINI_API_KEY_2`, etc.) in `.env` to enable rotation. If all keys fail, the system falls back to **Sandbox Mock Fallback Mode** to generate simulated responses.
 - **Stuck Jobs**: If containers exit unexpectedly, jobs may be left in `PROCESSING` states. The system watchdog automatically sweeps and fails these jobs on the next startup. To wipe the database completely, run `.\stop.ps1 -Clean`.
-
----
-
-## License
-Distributed under the MIT License. See [LICENSE](LICENSE) for details.

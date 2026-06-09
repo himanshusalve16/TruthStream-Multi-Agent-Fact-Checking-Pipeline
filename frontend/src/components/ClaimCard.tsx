@@ -179,7 +179,11 @@ export default function ClaimCard({ claim, verdict, sources, index }: Props) {
           >
             <BookOpen size={13} />
             <span>
-              {expanded ? 'Hide verification breakdown' : `Show details (${sources.length} sources)`}
+              {expanded
+                ? 'Hide verification breakdown'
+                : sources.length > 0
+                  ? `Show details (${sources.length} source${sources.length === 1 ? '' : 's'})`
+                  : 'Show AI reasoning'}
             </span>
             <motion.div
               animate={{ rotate: expanded ? 180 : 0 }}
@@ -214,7 +218,7 @@ export default function ClaimCard({ claim, verdict, sources, index }: Props) {
                   )}
 
                   {/* Citations List */}
-                  {sources.length > 0 && (
+                  {sources.length > 0 ? (
                     <div>
                       <span className="text-[10px] text-text-muted font-bold tracking-wider block mb-2 px-1">CORROBORATING CITATIONS</span>
                       <div className="flex flex-col gap-2">
@@ -222,6 +226,11 @@ export default function ClaimCard({ claim, verdict, sources, index }: Props) {
                           <SourceCard key={s.url} source={s} claimText={claim.text} />
                         ))}
                       </div>
+                    </div>
+                  ) : (
+                    <div className="flex items-start gap-2.5 p-3 rounded-lg border border-white/[0.04] bg-slate-950/30 text-text-muted text-xs">
+                      <span className="text-slate-500 mt-0.5 flex-shrink-0">⊘</span>
+                      <span>No external verification sources were retrieved for this claim. The verdict is based on internal AI reasoning.</span>
                     </div>
                   )}
                 </div>

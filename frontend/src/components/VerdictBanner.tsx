@@ -1,11 +1,19 @@
 import { motion } from 'framer-motion'
-import { AlertTriangle, CheckCircle2, XCircle, HelpCircle, Scale } from 'lucide-react'
+import { AlertTriangle, CheckCircle2, XCircle, HelpCircle, Scale, Globe, TrendingUp } from 'lucide-react'
 import ConfidenceGauge from './ConfidenceGauge'
+
+interface SourceStats {
+  total: number
+  supporting: number
+  refuting: number
+  neutral: number
+}
 
 interface Props {
   verdict: string
   confidence: number
   summary: string
+  sourceStats?: SourceStats
 }
 
 const VERDICT_META: Record<string, { 
@@ -50,7 +58,7 @@ const VERDICT_META: Record<string, {
   },
 }
 
-export default function VerdictBanner({ verdict, confidence, summary }: Props) {
+export default function VerdictBanner({ verdict, confidence, summary, sourceStats }: Props) {
   const meta = VERDICT_META[verdict] || {
     label: verdict,
     icon: <HelpCircle className="text-slate-400" size={28} />,
@@ -59,6 +67,9 @@ export default function VerdictBanner({ verdict, confidence, summary }: Props) {
     textColor: 'text-slate-400',
     badgeStyle: 'tag-muted',
   }
+
+  const hasSourceStats = sourceStats !== undefined
+  const hasSources = hasSourceStats && sourceStats!.total > 0
 
   return (
     <motion.div 
@@ -103,10 +114,60 @@ export default function VerdictBanner({ verdict, confidence, summary }: Props) {
           )}
 
           {/* Verdict Description Summary */}
-          <div className="p-4 bg-slate-950/40 rounded-xl border border-white/[0.02]">
+          <div className="p-4 bg-slate-950/40 rounded-xl border border-white/[0.02] mb-4">
             <p className="text-sm sm:text-base text-text-dim leading-relaxed font-medium">
               {summary}
             </p>
+          </div>
+
+          {/* Verification Sources Summary Row */}
+          <div className="mt-1">
+            <span className="text-[10px] text-text-muted font-bold tracking-wider uppercase flex items-center gap-1.5 mb-2">
+              <Globe size={11} className="text-indigo-400" />
+              Verification Sources
+            </span>
+
+            {hasSources ? (
+              <motion.div
+                initial={{ opacity: 0, y: 6 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.25, duration: 0.3 }}
+                className="grid grid-cols-4 gap-2"
+              >
+                {/* Total */}
+                <div className="bg-slate-950/50 border border-white/[0.04] rounded-lg px-3 py-2 text-center">
+                  <span className="text-[9px] text-text-muted font-bold tracking-wider block mb-0.5">TOTAL</span>
+                  <span className="text-sm font-black font-mono text-white">{sourceStats!.total}</span>
+                </div>
+                {/* Supporting */}
+                <div className="bg-emerald-500/5 border border-emerald-500/20 rounded-lg px-3 py-2 text-center">
+                  <span className="text-[9px] text-emerald-500/70 font-bold tracking-wider block mb-0.5">SUPPORT</span>
+                  <span className="text-sm font-black font-mono text-emerald-400">{sourceStats!.supporting}</span>
+                </div>
+                {/* Refuting */}
+                <div className="bg-rose-500/5 border border-rose-500/20 rounded-lg px-3 py-2 text-center">
+                  <span className="text-[9px] text-rose-500/70 font-bold tracking-wider block mb-0.5">REFUTE</span>
+                  <span className="text-sm font-black font-mono text-rose-400">{sourceStats!.refuting}</span>
+                </div>
+                {/* Neutral */}
+                <div className="bg-slate-500/5 border border-slate-500/20 rounded-lg px-3 py-2 text-center">
+                  <span className="text-[9px] text-slate-400/70 font-bold tracking-wider block mb-0.5">NEUTRAL</span>
+                  <span className="text-sm font-black font-mono text-slate-400">{sourceStats!.neutral}</span>
+                </div>
+              </motion.div>
+            ) : hasSourceStats ? (
+              /* No sources found — explicit empty state */
+              <div className="flex items-center gap-2.5 p-3 rounded-lg border border-white/[0.04] bg-slate-950/30 text-text-muted text-xs">
+                <TrendingUp size={14} className="opacity-40 flex-shrink-0" />
+                <span>No external verification sources were retrieved for this analysis. Verdict is based on internal AI reasoning only.</span>
+              </div>
+            ) : (
+              /* Still loading sources */
+              <div className="flex items-center gap-2 text-xs text-text-muted">
+                <span className="w-3 h-3 border-2 border-indigo-500/30 border-t-indigo-400 rounded-full animate-spin flex-shrink-0" />
+                <span>Fetching verification sources…</span>
+              </div>
+            )}
           </div>
         </div>
       </div>

@@ -54,6 +54,17 @@ export default function JobPage() {
   const hasVerdict = !!state.verdict
   const claimVerdicts = state.verdict?.claim_verdicts ?? []
 
+  // Aggregate source stats across all claims for VerdictBanner
+  const allSources = Object.values(state.sourcesByClaim).flat()
+  const sourceStats = hasVerdict
+    ? {
+        total: allSources.length,
+        supporting: allSources.filter(s => s.stance === 'SUPPORTS').length,
+        refuting: allSources.filter(s => s.stance === 'REFUTES').length,
+        neutral: allSources.filter(s => s.stance === 'NEUTRAL' || s.stance === 'UNCLEAR').length,
+      }
+    : undefined
+
   const handleCopyId = () => {
     if (id) {
       navigator.clipboard.writeText(id)
@@ -194,6 +205,7 @@ export default function JobPage() {
               verdict={state.verdict!.overall_verdict}
               confidence={state.verdict!.overall_confidence}
               summary={state.verdict!.overall_summary}
+              sourceStats={sourceStats}
             />
           )}
 
