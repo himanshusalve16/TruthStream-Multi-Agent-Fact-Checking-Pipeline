@@ -112,9 +112,10 @@ def compute_fallback_verdict(
 
     supported = sum(1 for v in claim_verdicts if v.verdict == "SUPPORTED")
     refuted = sum(1 for v in claim_verdicts if v.verdict == "REFUTED")
+    unverifiable = sum(1 for v in claim_verdicts if v.verdict == "UNVERIFIABLE")
     total = len(claim_verdicts)
 
-    if total == 0:
+    if total == 0 or unverifiable == total:
         overall = "UNVERIFIABLE"
         overall_conf = 0.0
     elif supported / total > 0.7:

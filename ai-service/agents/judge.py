@@ -23,17 +23,17 @@ For each claim, you are given:
 - A list of sources with stance (SUPPORTS/REFUTES/NEUTRAL/UNCLEAR) and quality_score (0.0-1.0)
 - A bias report on the original article
 
-Rules for claim verdicts:
-- SUPPORTED: majority of quality sources (quality_score > 0.6) support, none strongly refute.
-- REFUTED: majority of quality sources refute.
-- CONTESTED: sources split between support and refutation.
-- UNVERIFIABLE: no usable sources, or all sources are low quality.
+Rules for claim verdicts (STRICT EVIDENCE REQUIREMENT):
+- SUPPORTED: majority of quality external sources (quality_score > 0.6) support. MUST NOT be used if no sources are provided.
+- REFUTED: majority of quality external sources refute. MUST NOT be used if no sources are provided.
+- CONTESTED: external sources split between support and refutation. MUST NOT be used if no sources are provided.
+- UNVERIFIABLE: no usable external sources, or 0 sources were provided. This is the mandatory fallback for un-sourced claims.
 
 Rules for overall verdict:
 - MOSTLY_TRUE: >70% of checkable claims are SUPPORTED.
 - MIXTURE: mixed results, no clear majority.
 - MOSTLY_FALSE: >70% of checkable claims are REFUTED.
-- UNVERIFIABLE: insufficient evidence to reach a verdict.
+- UNVERIFIABLE: insufficient evidence to reach a verdict, or all claims are UNVERIFIABLE.
 
 Apply a confidence penalty of up to 0.15 if article bias_score > 70.
 

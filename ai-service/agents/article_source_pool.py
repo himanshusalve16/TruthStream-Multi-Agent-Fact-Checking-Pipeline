@@ -72,7 +72,7 @@ def _lexical_overlap(text_a: str, text_b: str) -> float:
 def _score_and_assign_sources(
     all_results: List[dict],
     claims: List[ClaimSchema],
-    max_sources_per_claim: int = 5,
+    max_sources_per_claim: int = 2,
 ) -> Dict[str, List[dict]]:
     """
     Score all pooled search results globally, then assign the most relevant
@@ -149,7 +149,7 @@ async def build_article_source_pool(
     http_client=None,
     max_queries: int = 2,
     max_pool_size: int = 10,
-    max_sources_per_claim: int = 5,
+    max_sources_per_claim: int = 2,
 ) -> Dict[str, ClaimSourcesResult]:
     """
     Build a shared source pool for an entire article in max_queries SerpAPI calls,
@@ -319,7 +319,7 @@ async def build_article_source_pool(
         src_count = len(result[cid].sources)
         if src_count == 0:
             logger.warning(
-                "[POOL] SOURCE_MISSING | Claim: '%s...' | No external source found — verdict based on internal reasoning",
+                "[POOL] SOURCE_MISSING | Claim: '%s...' | No external source found — verdict will default to UNVERIFIABLE",
                 claim.text[:70]
             )
         else:

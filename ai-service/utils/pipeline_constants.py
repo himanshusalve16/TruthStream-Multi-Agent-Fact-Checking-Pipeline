@@ -19,8 +19,8 @@ SOURCE_QUERIES_RECOVERY = 1   # 1 query: best effort
 
 # Max sources per claim after pool distribution
 MAX_SOURCES_PER_CLAIM_FAST = 2
-MAX_SOURCES_PER_CLAIM_STANDARD = 3
-MAX_SOURCES_PER_CLAIM_DEEP = 5
+MAX_SOURCES_PER_CLAIM_STANDARD = 2
+MAX_SOURCES_PER_CLAIM_DEEP = 2
 
 # ── Timeouts (seconds) ─────────────────────────────────────────────────────
 EXTRACTION_TIMEOUT_FAST = 15.0

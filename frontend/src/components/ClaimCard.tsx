@@ -171,7 +171,7 @@ export default function ClaimCard({ claim, verdict, sources, index }: Props) {
       </div>
 
       {/* Expand Accordion Controls */}
-      {(verdict?.reasoning || sources.length > 0) && (
+      {(hasVerdict) && (
         <div className="mt-4 pt-3 border-t border-border/40 text-left">
           <button
             className="flex items-center gap-1.5 text-xs font-bold text-accent hover:text-indigo-400 cursor-pointer transition-colors duration-200"
@@ -183,7 +183,7 @@ export default function ClaimCard({ claim, verdict, sources, index }: Props) {
                 ? 'Hide verification breakdown'
                 : sources.length > 0
                   ? `Show details (${sources.length} source${sources.length === 1 ? '' : 's'})`
-                  : 'Show AI reasoning'}
+                  : 'Show verification details'}
             </span>
             <motion.div
               animate={{ rotate: expanded ? 180 : 0 }}
@@ -204,19 +204,6 @@ export default function ClaimCard({ claim, verdict, sources, index }: Props) {
                 className="overflow-hidden"
               >
                 <div className="pt-4 flex flex-col gap-3">
-                  {/* AI Agent Reasoning block */}
-                  {verdict?.reasoning && (
-                    <div className="p-4 bg-slate-950/60 rounded-xl border border-white/[0.02] flex gap-2.5">
-                      <Sparkles size={16} className="text-purple-400 mt-0.5 flex-shrink-0" />
-                      <div>
-                        <span className="text-[10px] text-text-muted font-bold tracking-wider block mb-1">AGENT REASONING</span>
-                        <p className="text-xs sm:text-sm text-text-dim leading-relaxed font-medium">
-                          {verdict.reasoning}
-                        </p>
-                      </div>
-                    </div>
-                  )}
-
                   {/* Citations List */}
                   {sources.length > 0 ? (
                     <div>

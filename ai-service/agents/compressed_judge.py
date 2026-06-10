@@ -38,13 +38,13 @@ Analyze the article text for:
 - Tone (neutral vs persuasive)
 - Score bias from 0 (completely neutral) to 100 (heavily biased) and direction (left_leaning, right_leaning, pro_establishment, anti_establishment, neutral)
 
-Task 3: Veracity Judgment
-- Synthesize all evidence to determine the verdict of each claim:
-  - SUPPORTED: majority of quality sources (quality_score > 0.6) support, none strongly refute.
-  - REFUTED: majority of quality sources refute.
-  - CONTESTED: sources split between support and refutation.
-  - UNVERIFIABLE: no usable sources, or all sources are low quality.
-- Formulate the overall article verdict: MOSTLY_TRUE, MIXTURE, MOSTLY_FALSE, or UNVERIFIABLE.
+Task 3: Veracity Judgment (STRICT EVIDENCE REQUIREMENT)
+- Synthesize all evidence to determine the verdict of each claim. YOU MUST ONLY base this on the provided external sources:
+  - SUPPORTED: majority of quality external sources support. MUST NOT be used if 0 sources are provided.
+  - REFUTED: majority of quality external sources refute. MUST NOT be used if 0 sources are provided.
+  - CONTESTED: external sources split between support and refutation. MUST NOT be used if 0 sources are provided.
+  - UNVERIFIABLE: no usable external sources, or 0 sources were provided. This is the mandatory fallback for un-sourced claims.
+- Formulate the overall article verdict: MOSTLY_TRUE, MIXTURE, MOSTLY_FALSE, or UNVERIFIABLE. If all claims are UNVERIFIABLE, the overall verdict MUST be UNVERIFIABLE.
 - Calculate overall confidence (0.0 to 1.0), applying a confidence penalty of up to 0.15 if overall bias_score > 70.
 
 Output JSON only using this schema:
