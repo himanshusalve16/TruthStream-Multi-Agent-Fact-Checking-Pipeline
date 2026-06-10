@@ -72,11 +72,17 @@ async def extract_claims(
         )
 
     try:
+        import uuid
         response = await execute_gemini_call(call_extractor)
         raw = response.text
         data = json.loads(raw)
         claims_data = data.get("claims", [])
-        claims = [ClaimSchema(**c) for c in claims_data]
+        
+        claims = []
+        for c in claims_data:
+            c["claim_id"] = str(uuid.uuid4())
+            claims.append(ClaimSchema(**c))
+            
         return ClaimExtractionResult(
             claims=claims,
             extraction_notes=data.get("extraction_notes", ""),

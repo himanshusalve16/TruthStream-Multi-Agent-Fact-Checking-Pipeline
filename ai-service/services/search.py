@@ -36,12 +36,18 @@ _QUOTA_EXHAUSTED_TTL = 3600                 # 1 hour before retrying after 429
 
 # Stop-words for query trimming
 _STOP = {
+    # Grammar / Function words
     "the", "a", "an", "and", "or", "but", "is", "are", "was", "were",
     "in", "on", "at", "to", "for", "of", "with", "by", "that", "this",
     "it", "as", "from", "has", "have", "had", "be", "been", "being",
     "which", "who", "whose", "when", "where", "how", "its", "their",
     "said", "says", "will", "would", "could", "should", "may", "might",
     "also", "about", "after", "before", "during", "while", "since",
+    # UI Junk / Scraper noise
+    "home", "opinion", "wednesday", "monday", "tuesday", "thursday", 
+    "friday", "saturday", "sunday", "menu", "login", "subscribe", 
+    "navigation", "search", "advertisement", "newsletter", "sign",
+    "today", "yesterday", "tomorrow", "news", "article",
 }
 
 

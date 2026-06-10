@@ -208,6 +208,14 @@ async def run_standard_path_pipeline_flow(
                 claim.claim_type, claim.checkability,
                 emb or None,
             )
+            
+            # Map sources from temporary UUID to final DB UUID
+            old_id = claim.claim_id
+            if old_id and old_id in sources_by_claim:
+                s_res = sources_by_claim.pop(old_id)
+                s_res.claim_id = claim_id
+                sources_by_claim[claim_id] = s_res
+                
             claim.claim_id = claim_id
             inserted_claims.append(claim)
 
