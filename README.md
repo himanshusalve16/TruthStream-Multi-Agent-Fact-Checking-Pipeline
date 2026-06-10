@@ -32,9 +32,49 @@ TruthStream automates this entire process using a cooperative **multi-agent syst
 
 ---
 
+## How It Works (End-to-End Pipeline)
+
+TruthStream fact-checks submissions via a real-time, event-driven pipeline:
+1. **Ingestion**: A user submits an article URL or raw text. The Spring Boot backend gateway writes a `PENDING` job record to PostgreSQL and returns a `202 Accepted` response with the `job_id` to the frontend.
+2. **SSE Stream Initialization**: The React frontend establishes a Server-Sent Events (SSE) connection to `/api/jobs/{id}/stream`. The backend subscribes to a Redis Pub/Sub channel (`job:{id}:events`) to forward updates to the client in real-time.
+3. **Semantic Cache Lookup**: The gateway hashes the URL using MD5. If the URL was successfully processed within the last 24 hours, the gateway clones the cached claims and verdicts instantly, avoiding unnecessary processing and AI quota usage.
+4. **Complexity Routing**: The gateway sends the job request to FastAPI (`/internal/jobs`). FastAPI inspects the input:
+   - **Fast Path**: Short text passages (under 600 words) bypass background queuing and run a single-pass Gemini model call to extract claims, score bias, and judge veracity in one turn.
+   - **Standard/Deep Path**: Long text passages or URLs are queued in Redis (`job_queue_slow`) for asynchronous background processing.
+5. **Background Verification**: A FastAPI worker pulls the job from the Redis queue:
+   - **Claim Extraction**: The `Extractor` agent parses the text and extracts up to 5 discrete factual claims.
+   - **Semantic Deduplication**: Extracted claims are vectorized (using `text-embedding-004`) and matched against PostgreSQL using cosine similarity. If a claim was verified in the past 24 hours, the verdict is reused.
+   - **Source Discovery**: The `Source Finder` agent generates optimized queries. It queries SerpAPI (falling back to DuckDuckGo HTML scraping if unconfigured or quota-exceeded).
+     - **Standard Path (Snippet-Bypass)**: Stances are evaluated directly from search engine snippets and domain authority to maximize speed.
+     - **Deep Path**: Top 3 source URLs are crawled in parallel using thread executors and cleaned via BeautifulSoup, and stances are evaluated on the full text.
+   - **Bias Scoring**: In parallel, the `Bias Scorer` agent analyzes framing, loaded terms, and political bias.
+   - **Verdict Synthesis**: The `Judge` agent evaluates the consensus matrix across claims and sources to produce the overall verdict.
+6. **Streaming & Completion**: As each step executes, the worker publishes events to Redis. The gateway relays these events to the client. Once the verdict is saved, the job is marked `COMPLETE` and the stream is closed.
+
+---
+
+## Adaptive Multi-Pipeline Routing
+
+To ensure fast response times and low token consumption, the system dynamically routes articles:
+- **Fast Path**: Triggered for short raw text blocks (< 600 words). Bypasses web search entirely, executing a single-pass Gemini call. Complete in **3.5s – 5.0s**.
+- **Standard Path**: Triggered for standard URLs and medium articles. Uses web search but evaluates evidence strictly using search snippets and domain authority (crawler-bypass). Complete in **6.8s – 11.7s**.
+- **Deep Path**: Triggered for complex articles, highly contested claims, or when direct page analysis is required. Performs full-page web scraping in parallel for the top 3 results. Complete in **12.3s – 26.7s**.
+- **Recovery Path**: Triggered if any step fails or if all Gemini API keys hit rate limits. Uses a summary-based, best-effort evaluation fallback to ensure the system never hangs.
+
+---
+
+## Pipeline Limits & Capping
+
+TruthStream is designed to be highly optimized and resource-bounded:
+- **Claim Caps**: A maximum of **5 claims** are processed per article (capped at **2 claims** on the Fast Path and **3 claims** under high quota pressure) to prevent pipeline bloat and API timeout issues.
+- **Source Budgets**: To prevent SerpAPI quota exhaustion, the system limits search queries per article: **1 query** for Fast/Recovery paths, **2 queries** for Standard, and **3 queries** for Deep.
+- **Source Capping**: The pipeline maps at most **2 external sources** per claim, stopping search early once at least 1 high-quality supporting or refuting source is verified.
+
+---
+
 ## System Architecture
 
-TruthStream is designed as a split-microservice architecture registered with Eureka Service Discovery (Phase 2):
+TruthStream is designed as a decoupled, multi-service architecture:
 
 ```
                         ┌──────────────────────────────┐
@@ -47,31 +87,30 @@ TruthStream is designed as a split-microservice architecture registered with Eur
  │ 1. Gateway & Orchestration Service (Spring Boot - Port 8080)           │
  └──────┬──────────────────────────────┬───────────────────────────▲──────┘
         │                              │                           │
-        │ LPUSH Job ID                 │ HTTP / Eureka             │ Pub/Sub
-        ▼                              ▼                           │
- ┌──────────────┐             ┌─────────────────┐                  │
- │ Redis Queue  │             │  Eureka Server  │                  │
- └──────────────┘             │   (Port 8761)   │                  │
-        ▲                     └─────────────────┘                  │
-        │ BRPOP Job ID                 ▲                           │
-        │                              │ Register / Discovery      │
- ┌──────┴──────────────────────────────┴───────────────────────────┴──────┐
- │ 2. AI Execution Service (FastAPI - Port 8000)                          │
- └──────┬──────────────────────────────┬───────────────────────────┬──────┘
-        │                              │                           │
-        ▼                              ▼                           ▼
- ┌──────────────┐             ┌────────────┐              ┌──────────────┐
- │ Gemini API   │             │ Redis Pub  │              │ PostgreSQL   │
- └──────────────┘             └────────────┘              └──────────────┘
+        │ LPUSH Job ID                 │ HTTP POST                 │ Pub/Sub
+        ▼                              │ /internal/jobs            │
+ ┌──────────────┐                      ▼                           │
+ │ Redis Queue  ├──────────────┐┌──────────────┐                   │
+ └──────────────┘              ││ AI Service   │                   │
+                               ││ (FastAPI     │                   │
+                               ▼│  Port 8000)  │                   │
+ ┌──────────────────────────────┼──────┬───────┼───────────────────┴──────┐
+ │ Async Queue Workers          │      │       │                          │
+ └──────────────────────────────┘      ▼       ▼                          ▼
+                                ┌──────────┐┌──────────┐           ┌──────────┐
+                                │Gemini API││SerpAPI/DD│           │PostgreSQL│
+                                └──────────┘└──────────┘           └──────────┘
 ```
 
 ### Technology Stack
-- **Frontend**: React 19, Vite 8, TailwindCSS v4, TypeScript, D3.js
-- **Gateway & Orchestration Service**: Spring Boot 3.2, Spring MVC Async Emitters, Lettuce Redis
-- **AI Execution Service**: Python 3.12, FastAPI, asyncpg, Google GenAI SDK (Gemini 2.5 Flash & text-embedding-004), py-eureka-client
-- **Service Registry**: Netflix Eureka Server (Spring Cloud / Port 8761)
+- **Frontend**: React 19, Vite 8, TailwindCSS v4, TypeScript, D3.js (Confidence Gauge & Verdict Timeline)
+- **Gateway & Orchestration Service**: Spring Boot 3.2, Spring MVC Async Emitters, Lettuce Redis Client
+- **AI Execution Service**: Python 3.12, FastAPI, asyncpg, Google GenAI SDK (Gemini 2.5 Flash / Gemini 2.5 Flash Lite & text-embedding-004)
 - **Database**: PostgreSQL 16 + pgvector
-- **Broker / Cache**: Redis 7 (Queues & Pub/Sub messaging)
+- **Broker / Cache / Queue**: Redis 7 (Dual queue routing, search cache & Pub/Sub messaging)
+- **Source Retrieval**: SerpAPI (with DuckDuckGo HTML scraping fallback)
+- **Hosting / Deployment**: Vercel (Frontend), Render (Spring Boot backend, FastAPI AI service, PostgreSQL, Redis)
+
 
 ---
 
@@ -120,7 +159,6 @@ docker compose ps
 | Service | Access URL | Purpose |
 |---|---|---|
 | **Frontend UI** | [http://localhost:3000](http://localhost:3000) | Main user interface |
-| **Eureka Dashboard** | [http://localhost:8761](http://localhost:8761) | Service discovery registry console (Phase 2) |
 | **Spring Boot Actuator** | [http://localhost:8080/actuator/health](http://localhost:8080/actuator/health) | Gateway health status |
 | **FastAPI Docs** | [http://localhost:8000/docs](http://localhost:8000/docs) | AI service documentation & testing |
 | **FastAPI Health** | [http://localhost:8000/health](http://localhost:8000/health) | Ultra-lightweight keepalive probe |
@@ -214,6 +252,16 @@ The AI service includes dedicated observability and status routes:
 
 ## Troubleshooting
 
-- **Postgres Port Conflicts**: If you have a local PostgreSQL instance running on port 5432, the database container will fail to start. Update `DB_PORT=5433` in `.env` and restart.
-- **Gemini Key Issues**: If you see quota limits or key validation failures, you can configure multiple API keys (`GEMINI_API_KEY_1`, `GEMINI_API_KEY_2`, etc.) in `.env` to enable rotation. If all keys fail, the system falls back to **Sandbox Mock Fallback Mode** to generate simulated responses.
-- **Stuck Jobs**: If containers exit unexpectedly, jobs may be left in `PROCESSING` states. The system watchdog automatically sweeps and fails these jobs on the next startup. To wipe the database completely, run `.\stop.ps1 -Clean`.
+### Queueing Issues & Processing Lag
+- **Jobs taking too long in PENDING**: This indicates that the Redis queue workers are either stopped or overwhelmed. Check the number of active workers using `GET /observability/system/health`. Ensure that the queue sizes in Redis are low.
+- **Articles stuck in PROCESSING**: If a background worker crashes, a job may be left in `PROCESSING` indefinitely. The `stalled_jobs_watchdog` runs every 15 seconds and marks any job active for over 45 seconds as `FAILED`. On application startup, the FastAPI lifecycle watchdog also automatically resets any stale pending/processing jobs to `FAILED` status.
+
+### Source Verification & Verdict Mismatches
+- **Verdicts showing UNVERIFIABLE**: This is the expected, evidence-based default when the system cannot find corroborating web evidence. Verdicts are source-first, meaning we do not fall back to AI-only reasoning. If a claim has 0 verified sources attached to it, the judge will render it `UNVERIFIABLE`.
+- **Missing Sources / Source verification returns 0 results**: Ensure `SERPAPI_KEY` is configured and has remaining quota. If SerpAPI fails or runs out of credits, the pipeline automatically falls back to DuckDuckGo HTML scraping. However, if DuckDuckGo rate limits the scraper, source counts may drop.
+- **SerpAPI Quota Exhausted**: Check your SerpAPI usage dashboard. You can rotate search API keys in the `.env` configuration to maintain search reliability.
+
+### API Keys & Gateway Route Mismatches
+- **Gemini Key Issues (Quota Limits)**: If a Gemini key hits a `429` (Quota Exceeded) or `403` error, the AI service rotates to the next configured key (`GEMINI_API_KEY_1` through `GEMINI_API_KEY_4`). If all keys fail, the system falls back to the **Sandbox Mock Fallback Mode** to return simulated structures rather than throwing errors.
+- **Backend Route Mismatches / Gateway 503**: If the gateway logs show `503 Service Unavailable` when dispatching jobs, verify that the `FASTAPI_BASE_URL` is set to the correct URL of the running FastAPI container/service (e.g. `http://ai-service:8000` in Docker or `https://ai-service.onrender.com` in production).
+- **Render Deployment Failures**: Make sure all database migration scripts in `/backend/src/main/resources/db/migration/` are valid and the target database is active. Render free tier databases may sleep, causing initial connection timeouts. The Spring Boot backend uses HikariCP connection retries to wait for the database to wake up.

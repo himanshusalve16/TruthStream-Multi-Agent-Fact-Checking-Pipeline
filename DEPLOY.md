@@ -13,13 +13,12 @@ The monorepo contains services that should be deployed as follows:
 | **Frontend** | Static build (`/frontend`) | [Vercel](https://vercel.com) / Render Static | N/A |
 | **Gateway** | Dockerfile (`/backend`) | [Render](https://render.com) | `8080` (Render assigns) |
 | **AI Service** | Dockerfile (`/ai-service`) | Render | `8000` (Render assigns) |
-| **Eureka Server** | Dockerfile (`/eureka-server`) | Render | `8761` (Render assigns) |
 | **PostgreSQL** | Managed Database | Render / Railway | Requires `vector`, `uuid-ossp`, `pgcrypto` |
 | **Redis** | Managed Cache | Render / Railway | Pub/Sub + queue |
 
 > [!IMPORTANT]
-> **Deploy order**: Eureka Server → AI Service → Gateway → Frontend
-> Each service depends on the ones before it being reachable.
+> **Deploy order**: PostgreSQL + Redis → AI Service → Gateway → Frontend
+> Build and deploy the database and cache instances first so the AI service and Gateway can establish connection pools at startup.
 
 ---
 
@@ -57,13 +56,6 @@ Deploy the `ai-service` folder as a Docker service.
 | `GEMINI_API_KEY_2..4` | optional | Additional keys for rotation |
 | `SERPAPI_KEY` | your serpapi key | Optional — falls back to DuckDuckGo |
 | `INTERNAL_API_SECRET` | random hex string | Shared secret matching gateway |
-| `EUREKA_SERVER_URL` | `https://truthstream-eureka.onrender.com/eureka/` | Online Eureka registry URL |
-| `INSTANCE_HOST` | `ai-service-w29p.onrender.com` | **Your** Render AI service hostname (no https://) |
-| `INSTANCE_PORT` | `10000` | Render internal port (check Render dashboard) |
-
-> [!IMPORTANT]
-> Set `INSTANCE_HOST` to the hostname shown in your Render AI service's **Settings → Public URL**,
-> removing the `https://` prefix. This is what Eureka registers and what the gateway discovers.
 
 *FastAPI listens on the port Render assigns (usually `10000`). This is set via `$PORT`.*
 
@@ -84,19 +76,10 @@ on startup to initialize the application tables (`users`, `articles`, `jobs`, `c
 | `SPRING_DATASOURCE_PASSWORD` | your db password | DB password |
 | `SPRING_DATA_REDIS_HOST` | your redis host | Redis host |
 | `SPRING_DATA_REDIS_PORT` | `6379` | Redis port |
-| `FASTAPI_BASE_URL` | `https://ai-service-w29p.onrender.com` | **Static fallback** URL if Eureka unavailable |
+| `FASTAPI_BASE_URL` | `https://ai-service-w29p.onrender.com` | The direct URL of the deployed FastAPI AI Service (used for service-to-service communication) |
 | `INTERNAL_API_SECRET` | random hex string | Shared secret matching ai-service |
 | `JWT_SECRET` | 64-char hex string | JWT signing secret |
 | `JWT_EXPIRY_MS` | `3600000` | JWT token validity (ms) |
-| `EUREKA_CLIENT_SERVICEURL_DEFAULTZONE` | `https://truthstream-eureka.onrender.com/eureka/` | Eureka registry URL — **must include `/eureka/` suffix** |
-| `EUREKA_CLIENT_ENABLED` | `true` | Enable Eureka client registration |
-| `RENDER_EXTERNAL_HOSTNAME` | `backend-nccx.onrender.com` | *(auto-injected by Render)* Instance hostname for Eureka |
-
-> [!CAUTION]
-> `EUREKA_CLIENT_SERVICEURL_DEFAULTZONE` **must end with `/eureka/`** (including the trailing slash).
-> Using `https://truthstream-eureka.onrender.com` (without `/eureka/`) causes Spring Boot
-> to send registration to `/apps/TRUTHSTREAM-GATEWAY` instead of `/eureka/apps/TRUTHSTREAM-GATEWAY`,
-> which returns **HTTP 404** and the log line `registration status: 404`.
 
 *Spring Boot exposes port `8080` (Render assigns the actual port via `$PORT`).*
 
@@ -123,114 +106,8 @@ Ensure the backend accepts requests from your frontend domains. The CORS origins
 
 ---
 
-## 5. Deploying the Eureka Server (NEW)
-
-Deploy the `eureka-server` folder as a new Docker web service on Render.
-
-### Render Settings
-
-| Setting | Value |
-|---|---|
-| **Name** | `truthstream-eureka` |
-| **Root Directory** | `eureka-server` |
-| **Runtime** | Docker |
-| **Health Check Path** | `/actuator/health` |
-
-### Environment Variables
-
-Render injects `$PORT` automatically — no manual configuration needed.
-
-Optionally set:
-
-| Variable | Value | Description |
-|---|---|---|
-| `PORT` | *(auto-injected by Render)* | Render sets this automatically |
-
-### After Deployment
-
-The Eureka dashboard is accessible at:
-```
-https://truthstream-eureka.onrender.com
-```
-
-Expected dashboard content:
-- `TRUTHSTREAM-GATEWAY` — UP (Spring Boot gateway)
-- `TRUTHSTREAM-AI-SERVICE` — UP (FastAPI AI service)
-
-> [!NOTE]
-> On Render free tier, services sleep after ~15 minutes of inactivity. The dashboard
-> may show 0 registered instances if all services are sleeping. This is expected.
-> The fallback URL (`FASTAPI_BASE_URL`) ensures routing still works.
-
----
-
-## 7. Eureka Registration Troubleshooting
-
-### `registration status: 404`
-
-This is the most common Eureka registration failure. It means the Eureka server
-**is reachable** but the registration endpoint path is wrong.
-
-**Root cause**: `EUREKA_CLIENT_SERVICEURL_DEFAULTZONE` is missing the `/eureka/` suffix.
-
-Spring Boot constructs the registration URL as:
-```
-{defaultZone}apps/{APP_NAME}
-```
-
-| defaultZone value | Registration URL sent | Result |
-|---|---|---|
-| `https://...onrender.com/eureka/` ✅ | `https://...onrender.com/eureka/apps/TRUTHSTREAM-GATEWAY` | **200 OK** |
-| `https://...onrender.com/` ❌ | `https://...onrender.com/apps/TRUTHSTREAM-GATEWAY` | **404** |
-| `https://...onrender.com` ❌ | `https://...onrender.comapps/TRUTHSTREAM-GATEWAY` | **connection error** |
-
-**Fix**: Ensure the env var is set to exactly:
-```
-EUREKA_CLIENT_SERVICEURL_DEFAULTZONE=https://truthstream-eureka.onrender.com/eureka/
-```
-(with `/eureka/` path segment and trailing slash)
-
----
-
-### Gateway appears in logs but not in dashboard
-
-1. Check `RENDER_EXTERNAL_HOSTNAME` is set on the gateway service — Render injects this automatically, verify it appears in the service's environment.
-2. Check `eureka.instance.hostname` in logs: look for `Registering application TRUTHSTREAM-GATEWAY with eureka with status UP`.
-3. The dashboard auto-refreshes every 30s. Wait at least 60s after startup.
-
----
-
-### `HTTPS vs HTTP` redirect causing registration failure
-
-Render services redirect HTTP to HTTPS. The Spring Boot Eureka client does **not**
-follow HTTP → HTTPS redirects during registration. Always use `https://` in
-`EUREKA_CLIENT_SERVICEURL_DEFAULTZONE`.
-
----
-
-### Expected successful registration log lines
-
-When registration succeeds, look for these in the gateway logs:
-```
-Registering application TRUTHSTREAM-GATEWAY with eureka with status UP
-Sending heartbeat to eureka for app: TRUTHSTREAM-GATEWAY
-Got http response code 200 for request...
-```
-
-When discovery works, look for:
-```
-AI service URL resolved via Eureka: https://ai-service-w29p.onrender.com
-```
-
-When fallback is active:
-```
-Eureka returned no instances for TRUTHSTREAM-AI-SERVICE. Using static fallback URL.
-```
-
----
-
 ## Related Guides
 - [README.md](README.md) — Local development and quick start.
-- [MicroservicesAndEureka.md](MicroservicesAndEureka.md) — Eureka architecture and online dashboard.
 - [API-KEYS-AND-DEPLOYMENT.md](API-KEYS-AND-DEPLOYMENT.md) — Search configuration and API keys.
-- [Working.md](Working.md) — End-to-end architecture and internals.
+- [Working.md](Working.md) — End-to-end system internals & engineering handbook.
+

@@ -70,7 +70,7 @@ TruthStream searches the web for evidence to verify claims. It uses the followin
 
 ## 4. Docker Deployment
 
-TruthStream includes a `docker-compose.yml` configuration to orchestrate all services: **db**, **redis**, **eureka-server** (service registry), **ai-service**, **backend**, and **frontend**.
+TruthStream includes a `docker-compose.yml` configuration to orchestrate all services: **db**, **redis**, **ai-service**, **backend**, and **frontend**.
 
 ### Setup Steps
 1. Open PowerShell and navigate to the project root:
