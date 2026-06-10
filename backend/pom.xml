@@ -67,12 +67,6 @@
       <artifactId>spring-boot-starter-webflux</artifactId>
     </dependency>
 
-    <!-- Eureka Client — registers gateway with registry and discovers AI service -->
-    <dependency>
-      <groupId>org.springframework.cloud</groupId>
-      <artifactId>spring-cloud-starter-netflix-eureka-client</artifactId>
-    </dependency>
-
     <!-- Flyway -->
     <dependency>
       <groupId>org.flywaydb</groupId>

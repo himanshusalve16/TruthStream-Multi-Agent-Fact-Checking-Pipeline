@@ -1,6 +1,5 @@
 spring:
   application:
-    # This name appears in the Eureka dashboard as the service ID.
     name: truthstream-gateway
 
   datasource:
@@ -98,60 +97,6 @@ app:
     max-jobs-per-hour: 10
     max-auth-per-hour: 20
 
-# ── Eureka Service Discovery ───────────────────────────────────────────────────
-# CRITICAL: The defaultZone URL MUST end with /eureka/ (trailing slash included).
-# Example: https://truthstream-eureka.onrender.com/eureka/
-# Missing /eureka/ causes "registration status: 404" — the Eureka server only
-# serves registration endpoints under the /eureka/ path prefix.
-#
-# Set EUREKA_CLIENT_ENABLED=false to skip Eureka and use FASTAPI_BASE_URL only.
-eureka:
-  client:
-    enabled: ${EUREKA_CLIENT_ENABLED:true}
-    # register-with-eureka and fetch-registry must be plain `true` here.
-    # Spring Cloud automatically suppresses them when `enabled: false`.
-    # DO NOT couple these to EUREKA_CLIENT_ENABLED — that causes string-coercion
-    # issues and unpredictable behavior when the env var is not set.
-    register-with-eureka: true
-    fetch-registry: true
-    service-url:
-      # IMPORTANT: Must include /eureka/ suffix with trailing slash.
-      # Docker Compose: http://eureka-server:8761/eureka/
-      # Render production: https://truthstream-eureka.onrender.com/eureka/
-      defaultZone: ${EUREKA_CLIENT_SERVICEURL_DEFAULTZONE:http://eureka-server:8761/eureka/}
-    # How often the client fetches the full registry from the server.
-    registry-fetch-interval-seconds: 15
-    # Faster initial fetch so discovery is populated before first job dispatch.
-    initial-instance-info-replication-interval-seconds: 10
-    instance-info-replication-interval-seconds: 10
-  instance:
-    # ── Hostname advertised to Eureka ────────────────────────────────────────
-    # On Render: RENDER_EXTERNAL_HOSTNAME is auto-injected (e.g., backend-nccx.onrender.com).
-    # In Docker Compose: EUREKA_INSTANCE_HOSTNAME is set explicitly in docker-compose.yml
-    #   to the Docker service name ("backend") so container-to-container calls resolve.
-    # This two-variable approach avoids the Docker fallback resolving to a non-routable
-    # spring.application.name string ("truthstream-gateway").
-    hostname: ${RENDER_EXTERNAL_HOSTNAME:${EUREKA_INSTANCE_HOSTNAME:localhost}}
-    # Always use the hostname, never resolved IP (Render routes by hostname).
-    prefer-ip-address: false
-    # Render terminates TLS externally — the app itself speaks HTTP internally.
-    non-secure-port-enabled: true
-    secure-port-enabled: false
-    # ── Heartbeat / lease tuning for Render free tier ───────────────────────
-    # Heartbeat sent every 30s (default). Eureka server keeps instance alive
-    # if a heartbeat arrives within lease-expiration-duration-in-seconds.
-    lease-renewal-interval-in-seconds: 30
-    # If no heartbeat arrives within 90s, Eureka considers the instance DOWN.
-    # 3x the renewal interval is the recommended ratio.
-    lease-expiration-duration-in-seconds: 90
-    # Health check URL Eureka calls to confirm UP status.
-    health-check-url-path: /actuator/health
-    status-page-url-path: /actuator/info
-    # Metadata visible in the Eureka dashboard under instance details.
-    metadata-map:
-      service-type: gateway
-      version: "1.0"
-
 management:
   endpoints:
     web:
@@ -167,9 +112,5 @@ logging:
     org.springframework.security:  INFO
     org.springframework.web:       INFO
     com.zaxxer.hikari:             WARN
-    # Eureka registration diagnostics — set to DEBUG to trace 404 issues.
-    # Shows: registration attempts, heartbeat cycles, registry refresh.
-    com.netflix.discovery:         INFO
-    com.netflix.eureka:            WARN
   pattern:
     console: "%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n"
