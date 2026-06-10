@@ -9,7 +9,7 @@ from google.genai import types
 from models.schemas import ClaimSchema, ClaimSourcesResult, SourceSchema
 from services.gemini import execute_gemini_call
 from config import settings
-from services.search import search_web_with_fallback, build_claim_query, build_fallback_query
+from services.search import search_web_with_fallback, build_claim_query, build_fallback_query, build_article_queries
 from services.scraper import scrape_url
 from utils.text import extract_domain
 from utils.quality import score_source, is_paywalled
@@ -120,20 +120,21 @@ def deduplicate_and_filter_sources(results: List[dict], max_needed: int) -> List
 async def find_sources(
         claim: ClaimSchema,
         redis=None,
-        max_sources: int = 6,
+        max_sources: int = 5,
         http_client=None,
         scrape_full_text: bool = False,
         classify_stance: bool = True,
+        query_budget: int = 2,
 ) -> ClaimSourcesResult:
     """
     For a single claim: search → (optional scrape) → classify stance.
 
-    Improvements over previous version:
-    - Uses search_web_with_fallback() instead of search_web() — automatically
-      retries with a broader query when the primary returns < 3 results.
-    - Both primary and fallback queries are built with the improved builders
-      that remove site-operator restrictions and generate better terms.
-    - Structured diagnostic logging at every step.
+    query_budget controls how many search API calls are made:
+      1 = primary query only (fast path, minimal SerpAPI cost)
+      2 = primary + fallback if primary returns < 3 (default, balanced)
+
+    Note: prefer build_article_source_pool() for multi-claim articles
+    to share the search budget across all claims.
     """
     claim_id = claim.claim_id or ""
     claim_short = claim.text[:80]
@@ -148,14 +149,15 @@ async def find_sources(
     logger.info("[SOURCE] Primary query: %s", primary_query)
     logger.info("[SOURCE] Fallback query: %s", fallback_query)
 
-    # Fetch 15 results to have a robust deduplication pool
+    # Fetch up to 8 results (reduced from 15 to conserve SerpAPI quota)
     results, query_used = await search_web_with_fallback(
         primary_query=primary_query,
         fallback_query=fallback_query,
-        max_results=15,
+        max_results=8,
         redis=redis,
         http_client=http_client,
         min_primary_results=3,
+        query_budget=query_budget,
     )
 
     logger.info(

@@ -8,6 +8,7 @@ from db import queries
 from models.schemas import ClaimSchema, ClaimSourcesResult, BiasResult
 from agents.extractor import extract_claims
 from agents.source_finder import find_sources
+from agents.article_source_pool import build_article_source_pool
 from agents.compressed_judge import run_compressed_judge
 from utils.verdict_calc import compute_fallback_verdict
 from services.embeddings import embed_batch
@@ -85,14 +86,33 @@ async def run_standard_path_pipeline_flow(
         )
         return
 
-    # Deterministic web search in parallel for all candidate claims to compute significance overlap
+    # Build article-level source pool (2 SerpAPI calls total instead of N_claims × 2)
     await publish_status(redis, job_id, "verifying_sources", "Retrieving evidence sources (Standard Path)...")
-    
-    source_tasks = [
-        find_sources(claim, redis, max_sources=5, http_client=http_client, scrape_full_text=False, classify_stance=False)
-        for claim in candidate_claims
+
+    pool_results: Dict[str, ClaimSourcesResult] = {}
+    try:
+        pool_results = await build_article_source_pool(
+            article_text=cleaned,
+            article_url=input_url,
+            claims=candidate_claims,
+            redis=redis,
+            http_client=http_client,
+            max_queries=2,          # hard cap: 2 SerpAPI calls per article
+            max_pool_size=10,
+            max_sources_per_claim=5,
+        )
+    except Exception as e:
+        logger.warning("[STANDARD] Article source pool failed: %s — continuing without sources", e)
+        pool_results = {
+            (c.claim_id or ""): ClaimSourcesResult(claim_id=c.claim_id or "", sources=[])
+            for c in candidate_claims
+        }
+
+    # Compatibility shim: also compute per-claim overlap scores using pool results
+    source_results = [
+        pool_results.get(c.claim_id or "", ClaimSourcesResult(claim_id=c.claim_id or "", sources=[]))
+        for c in candidate_claims
     ]
-    source_results = await asyncio.gather(*source_tasks, return_exceptions=True)
 
     # Score and Prioritize Claims
     scored_claims = []

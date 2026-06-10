@@ -93,42 +93,6 @@ async def run_fast_path_pipeline(cleaned_text: str, url: str | None) -> dict:
     return json.loads(response.text)
 
 
-async def _collect_fast_path_sources(
-    claim_id: str,
-    claim_text: str,
-    claim_type: str | None,
-    redis,
-    http_client,
-) -> tuple[str, ClaimSourcesResult]:
-    """
-    Fetch up to 3 snippet-only sources for a single claim.
-    Returns (claim_id, ClaimSourcesResult). Never raises — failures return empty sources.
-    """
-    from agents.source_finder import find_sources
-
-    claim = ClaimSchema(
-        claim_id=claim_id,
-        text=claim_text,
-        claim_type=claim_type,
-        checkability="medium",
-    )
-    try:
-        result = await asyncio.wait_for(
-            find_sources(
-                claim,
-                redis=redis,
-                max_sources=3,
-                http_client=http_client,
-                scrape_full_text=False,
-                classify_stance=True,
-            ),
-            timeout=7.0,
-        )
-        return claim_id, result
-    except Exception as e:
-        logger.warning("[FAST-PATH] Source fetch failed for claim %s: %s", claim_id[:8], e)
-        return claim_id, ClaimSourcesResult(claim_id=claim_id, sources=[])
-
 
 async def run_fast_path_pipeline_flow(
     job_id: str, redis: aioredis.Redis, pool, raw_text: str, cleaned: str, wc: int,
@@ -220,32 +184,40 @@ async def run_fast_path_pipeline_flow(
         "extraction_notes": "Fast-path single-stage claim extraction."
     })
 
-    # ── Lightweight parallel source collection ───────────────────────────────
-    # Runs AFTER claims are inserted. Bounded to 8s total across all claims.
-    # Snippet-only (no scraping), max 3 sources per claim, classify_stance=True.
-    # Non-blocking: any failure produces 0 sources and the pipeline continues.
+    # ── Lightweight article-level source pool (1 SerpAPI call total) ─────────
+    # Runs after claims are inserted. Bounded to 8s total. Snippet-only.
+    # Distributes pool sources to claims by lexical overlap — no per-claim searches.
     if inserted_claim_data and http_client is not None:
         await publish_status(redis, job_id, "verifying_sources", "Retrieving verification sources...")
-        source_tasks = [
-            _collect_fast_path_sources(cid, ctext, ctype, redis, http_client)
+        # Build ClaimSchema objects for pool builder
+        pool_claims = [
+            ClaimSchema(claim_id=cid, text=ctext, claim_type=ctype, checkability="medium")
             for cid, ctext, ctype in inserted_claim_data
         ]
+        pool_sources: dict[str, ClaimSourcesResult] = {}
         try:
-            source_results = await asyncio.wait_for(
-                asyncio.gather(*source_tasks, return_exceptions=True),
+            from agents.article_source_pool import build_article_source_pool
+            pool_sources = await asyncio.wait_for(
+                build_article_source_pool(
+                    article_text=cleaned,
+                    article_url=input_url,
+                    claims=pool_claims,
+                    redis=redis,
+                    http_client=http_client,
+                    max_queries=1,           # fast path: 1 SerpAPI call total
+                    max_pool_size=6,
+                    max_sources_per_claim=3,
+                ),
                 timeout=8.0,
             )
         except asyncio.TimeoutError:
-            logger.warning("[FAST-PATH] Source collection overall timeout — skipping sources.")
-            source_results = []
+            logger.warning("[FAST-PATH] Source pool timeout — skipping sources.")
+        except Exception as e:
+            logger.warning("[FAST-PATH] Source pool failed: %s — skipping sources.", e)
 
-        for item in source_results:
-            if isinstance(item, Exception) or item is None:
-                continue
-            cid, s_result = item
+        for cid, s_result in pool_sources.items():
             if not s_result.sources:
                 continue
-            # Persist sources to DB
             saved_sources = []
             for s in s_result.sources:
                 sid = await queries.insert_source(
@@ -264,7 +236,6 @@ async def run_fast_path_pipeline_flow(
                     "quality_score": s.quality_score,
                     "fetch_status": s.fetch_status,
                 })
-            # Publish SSE event so frontend updates in real-time
             await publish_event(redis, job_id, "claim_sourced", {
                 "claim_id": cid,
                 "sources": saved_sources,
