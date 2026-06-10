@@ -157,9 +157,9 @@ export default function VerdictBanner({ verdict, confidence, summary, sourceStat
               </motion.div>
             ) : hasSourceStats ? (
               /* No sources found — explicit empty state */
-              <div className="flex items-center gap-2.5 p-3 rounded-lg border border-white/[0.04] bg-slate-950/30 text-text-muted text-xs">
-                <TrendingUp size={14} className="opacity-40 flex-shrink-0" />
-                <span>No external verification sources were retrieved for this analysis. Verdict is based on internal AI reasoning only.</span>
+              <div className="flex items-center gap-2.5 p-3 rounded-lg border border-amber-500/20 bg-amber-500/5 text-text-muted text-xs">
+                <TrendingUp size={14} className="text-amber-500/60 flex-shrink-0" />
+                <span className="text-amber-200/60">No external verification sources found. Verdict is based on AI reasoning only.</span>
               </div>
             ) : (
               /* Still loading sources */

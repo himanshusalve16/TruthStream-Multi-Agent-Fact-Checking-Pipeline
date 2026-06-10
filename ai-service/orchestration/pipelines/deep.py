@@ -8,12 +8,18 @@ from db import queries
 from models.schemas import ClaimSchema, ClaimSourcesResult, BiasResult
 from agents.extractor import extract_claims
 from agents.source_finder import find_sources
+from agents.article_source_pool import build_article_source_pool
 from agents.compressed_judge import run_compressed_judge
 from utils.verdict_calc import compute_fallback_verdict
 from services.embeddings import embed_batch
 from services.redis_publisher import publish_status, publish_event, publish_done
 from orchestration.pipelines.recovery import run_recovery_pipeline_flow
 from utils.priority import compute_claim_significance, calculate_source_overlap, fetch_cached_claim_results
+from utils.pipeline_constants import (
+    MAX_CLAIMS, MAX_CLAIMS_MODERATE,
+    SOURCE_QUERIES_DEEP, MAX_SOURCES_PER_CLAIM_DEEP,
+    SOURCE_POOL_TIMEOUT_DEEP,
+)
 
 logger = logging.getLogger("truthstream.ai.deep")
 
@@ -54,10 +60,10 @@ async def run_deep_path_pipeline_flow(
         )
         return
 
-    claim_limit = 3 if pressure == "moderate" else 6
+    claim_limit = MAX_CLAIMS_MODERATE if pressure == "moderate" else MAX_CLAIMS
     if pressure == "moderate":
-        logger.warning("[INSTRUMENTATION] LIGHTWEIGHT_MODE_ACTIVATED | Moderate pressure: limiting claims to 3.")
-        await publish_status(redis, job_id, "routing", "⚠️ Quota pressure detected: Running lightweight verification (Max 3 claims)...")
+        logger.warning("[INSTRUMENTATION] LIGHTWEIGHT_MODE_ACTIVATED | Moderate pressure: limiting claims to %d.", MAX_CLAIMS_MODERATE)
+        await publish_status(redis, job_id, "routing", f"⚠️ Quota pressure detected: Running lightweight verification (Max {MAX_CLAIMS_MODERATE} claims)...")
 
     # Extract candidate claims
     candidate_claims = []
@@ -85,14 +91,35 @@ async def run_deep_path_pipeline_flow(
         )
         return
 
-    # Deterministic web search and deep scraping in parallel for all candidate claims to compute significance overlap
-    await publish_status(redis, job_id, "verifying_sources", "Crawling and scraping sources (Deep Path)...")
-    
-    source_tasks = [
-        find_sources(claim, redis, max_sources=6, http_client=http_client, scrape_full_text=True, classify_stance=False)
-        for claim in candidate_claims
+    # Build article-level source pool (max 3 SerpAPI calls for deep path, distributed across all claims)
+    await publish_status(redis, job_id, "verifying_sources", "Crawling and scoring sources (Deep Path)...")
+
+    pool_results: Dict[str, ClaimSourcesResult] = {}
+    try:
+        pool_results = await asyncio.wait_for(
+            build_article_source_pool(
+                article_text=cleaned,
+                article_url=input_url,
+                claims=candidate_claims,
+                redis=redis,
+                http_client=http_client,
+                max_queries=SOURCE_QUERIES_DEEP,
+                max_pool_size=15,
+                max_sources_per_claim=MAX_SOURCES_PER_CLAIM_DEEP,
+            ),
+            timeout=SOURCE_POOL_TIMEOUT_DEEP,
+        )
+    except Exception as e:
+        logger.warning("[DEEP] Article source pool failed: %s — continuing without sources", e)
+        pool_results = {
+            (c.claim_id or ""): ClaimSourcesResult(claim_id=c.claim_id or "", sources=[])
+            for c in candidate_claims
+        }
+
+    source_results = [
+        pool_results.get(c.claim_id or "", ClaimSourcesResult(claim_id=c.claim_id or "", sources=[]))
+        for c in candidate_claims
     ]
-    source_results = await asyncio.gather(*source_tasks, return_exceptions=True)
 
     # Score and Prioritize Claims
     scored_claims = []

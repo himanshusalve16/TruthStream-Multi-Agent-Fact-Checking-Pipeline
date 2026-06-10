@@ -228,9 +228,9 @@ export default function ClaimCard({ claim, verdict, sources, index }: Props) {
                       </div>
                     </div>
                   ) : (
-                    <div className="flex items-start gap-2.5 p-3 rounded-lg border border-white/[0.04] bg-slate-950/30 text-text-muted text-xs">
-                      <span className="text-slate-500 mt-0.5 flex-shrink-0">⊘</span>
-                      <span>No external verification sources were retrieved for this claim. The verdict is based on internal AI reasoning.</span>
+                    <div className="flex items-start gap-2.5 p-3 rounded-lg border border-amber-500/20 bg-amber-500/5 text-text-muted text-xs">
+                      <span className="text-amber-500/70 mt-0.5 flex-shrink-0">⚠</span>
+                      <span className="text-amber-200/60">No external verification source found for this claim.</span>
                     </div>
                   )}
                 </div>

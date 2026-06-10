@@ -15,6 +15,11 @@ from services.embeddings import embed_batch
 from services.redis_publisher import publish_status, publish_event, publish_done
 from orchestration.pipelines.recovery import run_recovery_pipeline_flow
 from utils.priority import compute_claim_significance, calculate_source_overlap, fetch_cached_claim_results
+from utils.pipeline_constants import (
+    MAX_CLAIMS, MAX_CLAIMS_MODERATE,
+    SOURCE_QUERIES_STANDARD, MAX_SOURCES_PER_CLAIM_STANDARD,
+    SOURCE_POOL_TIMEOUT_STANDARD,
+)
 
 logger = logging.getLogger("truthstream.ai.standard")
 
@@ -55,10 +60,10 @@ async def run_standard_path_pipeline_flow(
         )
         return
 
-    claim_limit = 3 if pressure == "moderate" else 5
+    claim_limit = MAX_CLAIMS_MODERATE if pressure == "moderate" else MAX_CLAIMS
     if pressure == "moderate":
-        logger.warning("[INSTRUMENTATION] LIGHTWEIGHT_MODE_ACTIVATED | Moderate pressure: limiting claims to 3.")
-        await publish_status(redis, job_id, "routing", "⚠️ Quota pressure detected: Running lightweight verification (Max 3 claims)...")
+        logger.warning("[INSTRUMENTATION] LIGHTWEIGHT_MODE_ACTIVATED | Moderate pressure: limiting claims to %d.", MAX_CLAIMS_MODERATE)
+        await publish_status(redis, job_id, "routing", f"⚠️ Quota pressure detected: Running lightweight verification (Max {MAX_CLAIMS_MODERATE} claims)...")
 
     # Extract candidate claims
     candidate_claims = []
@@ -91,15 +96,18 @@ async def run_standard_path_pipeline_flow(
 
     pool_results: Dict[str, ClaimSourcesResult] = {}
     try:
-        pool_results = await build_article_source_pool(
-            article_text=cleaned,
-            article_url=input_url,
-            claims=candidate_claims,
-            redis=redis,
-            http_client=http_client,
-            max_queries=2,          # hard cap: 2 SerpAPI calls per article
-            max_pool_size=10,
-            max_sources_per_claim=5,
+        pool_results = await asyncio.wait_for(
+            build_article_source_pool(
+                article_text=cleaned,
+                article_url=input_url,
+                claims=candidate_claims,
+                redis=redis,
+                http_client=http_client,
+                max_queries=SOURCE_QUERIES_STANDARD,
+                max_pool_size=10,
+                max_sources_per_claim=MAX_SOURCES_PER_CLAIM_STANDARD,
+            ),
+            timeout=SOURCE_POOL_TIMEOUT_STANDARD,
         )
     except Exception as e:
         logger.warning("[STANDARD] Article source pool failed: %s — continuing without sources", e)

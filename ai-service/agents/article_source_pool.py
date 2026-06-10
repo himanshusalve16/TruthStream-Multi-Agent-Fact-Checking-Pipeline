@@ -241,8 +241,51 @@ async def build_article_source_pool(
         max_sources_per_claim=max_sources_per_claim,
     )
 
-    # ── Step 5: Convert to ClaimSourcesResult objects ─────────────────────────
+    # ── Step 5: Per-claim source enforcement ──────────────────────────────────
+    # If any claim has 0 sources after pool distribution, run ONE targeted search
+    # for that claim specifically (stop-early: 1 good source is enough).
+    # This ensures no claim is silently left without a source status.
+    claims_needing_fallback = [
+        c for c in claims
+        if not assignment.get(c.claim_id or "", [])
+    ]
+    if claims_needing_fallback:
+        logger.info(
+            "[POOL] %d claim(s) have 0 sources after pool — running targeted single-claim search",
+            len(claims_needing_fallback),
+        )
+        for claim in claims_needing_fallback:
+            cid = claim.claim_id or ""
+            try:
+                targeted_q = build_fallback_query(claim.text)
+                targeted_results = await search_web(
+                    targeted_q, max_results=5, redis=redis, http_client=http_client
+                )
+                if targeted_results:
+                    # Add top result to pool for this claim
+                    best = targeted_results[0]
+                    domain = extract_domain(best.get("url", "")) or best.get("url", "")
+                    assignment[cid] = [{
+                        **best,
+                        "domain": domain,
+                        "quality_score": _domain_tier_boost(domain) + 0.4,
+                    }]
+                    logger.info(
+                        "[POOL] Targeted fallback for claim '%s...' → found 1 source: %s",
+                        claim.text[:50], best.get("url", "")[:60],
+                    )
+                else:
+                    logger.warning(
+                        "[POOL] No source found for claim '%s...' — will be marked unverifiable",
+                        claim.text[:60],
+                    )
+            except Exception as e:
+                logger.warning("[POOL] Targeted fallback for claim '%s...' failed: %s", claim.text[:40], e)
+
+    # ── Step 6: Convert to ClaimSourcesResult objects ─────────────────────────
     result: Dict[str, ClaimSourcesResult] = {}
+    zero_source_claims: List[str] = []
+
     for claim in claims:
         cid = claim.claim_id or ""
         assigned = assignment.get(cid, [])
@@ -260,10 +303,29 @@ async def build_article_source_pool(
             ))
         result[cid] = ClaimSourcesResult(claim_id=cid, sources=sources)
 
+        # Diagnostic: flag claims with no sources so they surface in logs
+        if not sources:
+            zero_source_claims.append(claim.text[:60])
+
     total_sources = sum(len(v.sources) for v in result.values())
+
+    # ── Step 7: Diagnostics ───────────────────────────────────────────────────
     logger.info(
-        "[POOL] Done | Queries used: %d | Total sources assigned: %d | Claims: %d",
-        len(queries), total_sources, len(claims)
+        "[POOL] Done | Queries used: %d | Total sources: %d | Claims: %d | Zero-source claims: %d",
+        len(queries), total_sources, len(claims), len(zero_source_claims)
     )
+    for claim in claims:
+        cid = claim.claim_id or ""
+        src_count = len(result[cid].sources)
+        if src_count == 0:
+            logger.warning(
+                "[POOL] SOURCE_MISSING | Claim: '%s...' | No external source found — verdict based on internal reasoning",
+                claim.text[:70]
+            )
+        else:
+            logger.info(
+                "[POOL] SOURCE_OK | Claim: '%s...' | Sources: %d",
+                claim.text[:70], src_count
+            )
 
     return result

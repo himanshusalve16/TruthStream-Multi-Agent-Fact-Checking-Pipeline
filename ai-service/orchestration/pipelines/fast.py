@@ -11,6 +11,11 @@ from services.gemini import execute_gemini_call
 from services.redis_publisher import publish_status, publish_event, publish_done
 from orchestration.pipelines.recovery import run_recovery_pipeline_flow
 from models.schemas import ClaimSchema, ClaimSourcesResult
+from utils.pipeline_constants import (
+    MAX_CLAIMS_FAST,
+    SOURCE_QUERIES_FAST, MAX_SOURCES_PER_CLAIM_FAST,
+    SOURCE_POOL_TIMEOUT_FAST,
+)
 
 logger = logging.getLogger("truthstream.ai.fast")
 
@@ -18,7 +23,8 @@ UNIFIED_FAST_PATH_SYSTEM_PROMPT = """You are an elite, rapid fact-checker and me
 Analyze the provided short article/text. You must perform claim extraction, bias analysis, and veracity judgment all in one single pass.
 
 Task 1: Factual Claim Extraction
-- Extract up to 3 discrete checkable factual claims (statistics, events, attribution, definition).
+- Extract up to 2 discrete checkable factual claims (statistics, events, attribution, definition).
+- Prioritize the highest-value, most verifiable claims. Ignore low-value or opinion claims.
 - For each claim, rate checkability: "high", "medium", or "low".
 
 Task 2: Media Bias Analysis
@@ -154,12 +160,17 @@ async def run_fast_path_pipeline_flow(
         "summary": bias_summary
     })
     
-    # Save claims and collect their IDs for source retrieval
+    # Save claims (capped at MAX_CLAIMS_FAST to enforce global limit)
     temp_to_real_id: dict[str, str] = {}
     claims_list = []
     inserted_claim_data: list[tuple[str, str, str | None]] = []  # (claim_id, text, claim_type)
 
-    for c in fast_result.get("claims", []):
+    raw_claims = fast_result.get("claims", [])
+    if len(raw_claims) > MAX_CLAIMS_FAST:
+        logger.info("[FAST] Capping claims %d → %d (MAX_CLAIMS_FAST)", len(raw_claims), MAX_CLAIMS_FAST)
+        raw_claims = raw_claims[:MAX_CLAIMS_FAST]
+
+    for c in raw_claims:
         temp_id = c.get("temp_id", "c1")
         text = c.get("text", "")
         context_quote = c.get("context_quote", "")
@@ -204,11 +215,11 @@ async def run_fast_path_pipeline_flow(
                     claims=pool_claims,
                     redis=redis,
                     http_client=http_client,
-                    max_queries=1,           # fast path: 1 SerpAPI call total
+                    max_queries=SOURCE_QUERIES_FAST,
                     max_pool_size=6,
-                    max_sources_per_claim=3,
+                    max_sources_per_claim=MAX_SOURCES_PER_CLAIM_FAST,
                 ),
-                timeout=8.0,
+                timeout=SOURCE_POOL_TIMEOUT_FAST,
             )
         except asyncio.TimeoutError:
             logger.warning("[FAST-PATH] Source pool timeout — skipping sources.")

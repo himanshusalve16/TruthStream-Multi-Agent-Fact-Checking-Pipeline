@@ -131,7 +131,13 @@ async def lifespan(app: FastAPI):
     app.state.boot_stage = "initializing"
     from services.gemini import validate_gemini_model_sync, gemini_manager
     await asyncio.to_thread(validate_gemini_model_sync)
-    logger.info("[STARTUP] Gemini AI client validated.")
+    # Log how many keys are loaded so key-rotation issues are immediately visible
+    _key_count = gemini_manager.get_total_keys()
+    _masked = [gemini_manager.get_current_key_masked()]
+    logger.info(
+        "[STARTUP] Gemini AI client validated. Keys loaded: %d | Active key: %s",
+        _key_count, gemini_manager.get_current_key_masked()
+    )
     
     # Phase 2: Prewarm Gemini clients to eliminate cold-start latency
     logger.info("[INSTRUMENTATION] GEMINI_PREWARM_START")
@@ -352,3 +358,41 @@ async def ready(request: Request):
 
     return {"status": "ready"}
 
+
+@app.post("/admin/reload-keys")
+async def admin_reload_keys():
+    """
+    Zero-downtime API key rotation endpoint.
+
+    After rotating the GEMINI_API_KEY_1 (or _2/_3/_4) environment variable,
+    call this endpoint to make the running process pick up the new key without
+    restarting. It clears all per-key cooldowns so the new key is immediately
+    eligible for use.
+
+    Returns: key count and masked active key for confirmation.
+
+    Example:
+      curl -X POST https://your-service/admin/reload-keys
+    """
+    from services.gemini import gemini_manager
+    try:
+        old_count = gemini_manager.get_total_keys()
+        gemini_manager.reload_keys()
+        new_count = gemini_manager.get_total_keys()
+        active_masked = gemini_manager.get_current_key_masked()
+        logger.info(
+            "[KEY_ROTATION] reload-keys called | Old key count: %d | New key count: %d | Active: %s",
+            old_count, new_count, active_masked,
+        )
+        return {
+            "status": "ok",
+            "keys_loaded": new_count,
+            "active_key": active_masked,
+            "message": f"Key pool reloaded. {new_count} key(s) active. All per-key cooldowns cleared.",
+        }
+    except Exception as e:
+        logger.error("[KEY_ROTATION] reload-keys failed: %s", e)
+        return JSONResponse(
+            status_code=500,
+            content={"status": "error", "message": str(e)},
+        )
